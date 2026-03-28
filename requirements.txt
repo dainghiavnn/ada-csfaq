@@ -8,3 +8,5 @@ google-auth-oauthlib
 streamlit-authenticator==0.4.1
 google-generativeai
 bcrypt
+PyPDF2
+python-docx
