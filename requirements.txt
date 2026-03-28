@@ -1,9 +1,8 @@
 streamlit
-streamlit-authenticator
-google-generativeai
-langchain
-langchain-community
-faiss-cpu
-pypdf
-python-docx
 pandas
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
+openpyxl
+streamlit-authenticator
