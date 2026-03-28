@@ -4,6 +4,7 @@ import io
 import time
 import json
 import traceback
+import bcrypt  # [MỚI] Bổ sung thư viện băm mật khẩu lõi
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import streamlit_authenticator as stauth
@@ -83,7 +84,7 @@ def load_users(root_folder_id):
                     return pd.read_excel(file_stream)
     return pd.DataFrame()
 
-# --- OPTIMIZED CREDENTIALS ---
+# --- OPTIMIZED CREDENTIALS (SỬA LỖI HASHING) ---
 @st.cache_data(ttl=600)
 def prepare_credentials(_df_users):
     creds = {"usernames": {}}
@@ -91,19 +92,25 @@ def prepare_credentials(_df_users):
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
         
         for i, (_, row) in enumerate(active_users.iterrows()):
+            # [FIX] Cẩn trọng: Định dạng email phải trùng khớp hoàn toàn (Loại bỏ khoảng trắng thừa)
             email = str(row['MAIL']).strip()
+            plain_pass = str(row['Password']).strip()
+            
+            # [FIX] Tự tay Hashing bằng thuật toán chuẩn thay vì phụ thuộc vào thư viện bên ngoài
+            if plain_pass.startswith("$2b$"): 
+                # Trường hợp password trong file Excel đã được băm sẵn
+                hashed_pass = plain_pass
+            else:
+                # Trường hợp password trong file Excel là văn bản thuần
+                hashed_pass = bcrypt.hashpw(plain_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
             creds["usernames"][email] = {
                 "email": email,
                 "name": str(row['NAME']).strip(),
-                "password": str(row['Password']).strip(), 
+                "password": hashed_pass, 
                 "logged_in": False,
                 "failed_login_attempts": 0
             }
-            
-        try:
-            stauth.Hasher.hash_passwords(creds)
-        except Exception as e:
-            print(f"Lỗi Hashing: {e}")
             
     return creds
 
@@ -204,7 +211,6 @@ try:
 
     st.subheader('CSADA FAQ Portal Login')
     
-    # [FIX] Đổi luồng bóc tách dữ liệu theo kiến trúc mới nhất của stauth
     authenticator.login(location='main')
     
     authentication_status = st.session_state.get("authentication_status")
