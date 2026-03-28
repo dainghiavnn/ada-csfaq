@@ -86,22 +86,21 @@ def load_users(root_folder_id):
 
 # --- OPTIMIZED CREDENTIALS (SỬA LỖI HASHING) ---
 @st.cache_data(ttl=600)
+@st.cache_data(ttl=600)
 def prepare_credentials(_df_users):
     creds = {"usernames": {}}
+    
+    # 1. Nạp danh sách user từ Google Sheet
     if isinstance(_df_users, pd.DataFrame) and not _df_users.empty:
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
         
         for i, (_, row) in enumerate(active_users.iterrows()):
-            # [FIX] Cẩn trọng: Định dạng email phải trùng khớp hoàn toàn (Loại bỏ khoảng trắng thừa)
             email = str(row['MAIL']).strip()
             plain_pass = str(row['Password']).strip()
             
-            # [FIX] Tự tay Hashing bằng thuật toán chuẩn thay vì phụ thuộc vào thư viện bên ngoài
             if plain_pass.startswith("$2b$"): 
-                # Trường hợp password trong file Excel đã được băm sẵn
                 hashed_pass = plain_pass
             else:
-                # Trường hợp password trong file Excel là văn bản thuần
                 hashed_pass = bcrypt.hashpw(plain_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
             creds["usernames"][email] = {
@@ -111,6 +110,19 @@ def prepare_credentials(_df_users):
                 "logged_in": False,
                 "failed_login_attempts": 0
             }
+            
+    # 2. Tiêm tài khoản Admin mặc định (Hardcoded)
+    admin_username = "admin"
+    admin_plain_pass = "ADA@Vn"
+    admin_hashed_pass = bcrypt.hashpw(admin_plain_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
+    creds["usernames"][admin_username] = {
+        "email": admin_username,
+        "name": "System Administrator",
+        "password": admin_hashed_pass,
+        "logged_in": False,
+        "failed_login_attempts": 0
+    }
             
     return creds
 
