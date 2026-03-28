@@ -10,16 +10,18 @@ import google.generativeai as genai
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="CSADA FAQ System", page_icon="🏢", layout="wide")
 
-# --- 1. SAFEGUARDED DRIVE & GEMINI API CONNECTION ---
+# --- 1. ROCK-SOLID DRIVE & GEMINI API CONNECTION ---
 @st.cache_resource
 def get_drive_service():
     raw_creds = st.secrets["gcp_service_account"]
     
-    # Ép kiểu dữ liệu tàn nhẫn để chặn đứng lỗi 'list indices must be integers'
-    if isinstance(raw_creds, (list, tuple)):
-        creds_info = raw_creds[0]
+    # Ép kiểu phòng thủ tàn nhẫn để ngăn chặn lỗi List Indices từ TOML
+    if hasattr(raw_creds, "to_dict"):
+        creds_info = raw_creds.to_dict()
+    elif isinstance(raw_creds, list) and len(raw_creds) > 0:
+        creds_info = dict(raw_creds[0])
     else:
-        creds_info = raw_creds
+        creds_info = dict(raw_creds)
         
     creds_dict = {str(k): str(v) for k, v in creds_info.items()}
     creds = service_account.Credentials.from_service_account_info(creds_dict)
@@ -30,37 +32,54 @@ drive_service = get_drive_service()
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-# --- 2. RECURSIVE FOLDER SCANNING ---
+# --- 2. DEFENSIVE RECURSIVE FOLDER SCANNING ---
 def get_files_in_folder(folder_id):
-    query = f"'{folder_id}' in parents and trashed=false"
-    results = drive_service.files().list(
-        q=query, 
-        fields="files(id, name, mimeType)"
-    ).execute()
-    return results.get('files', [])
+    if not folder_id or not isinstance(folder_id, str):
+        return []
+    try:
+        query = f"'{folder_id}' in parents and trashed=false"
+        results = drive_service.files().list(
+            q=query, 
+            fields="files(id, name, mimeType)"
+        ).execute()
+        
+        if isinstance(results, dict):
+            return results.get('files', [])
+        return []
+    except Exception as e:
+        print(f"Drive API Warning: {e}")
+        return []
 
 # --- 3. READ USER DETAIL FILE ---
 @st.cache_data(ttl=600)
 def load_users(root_folder_id):
     items = get_files_in_folder(root_folder_id)
-    for item in items:
-        if isinstance(item, dict) and item.get('name') == 'CSADA-UserDetail':
-            request = drive_service.files().export_media(
-                fileId=item['id'],
-                mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
-            file_stream = io.BytesIO(request.execute())
-            return pd.read_excel(file_stream)
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and item.get('name') == 'CSADA-UserDetail':
+                file_id = item.get('id')
+                if file_id:
+                    request = drive_service.files().export_media(
+                        fileId=file_id,
+                        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    )
+                    file_stream = io.BytesIO(request.execute())
+                    return pd.read_excel(file_stream)
     return pd.DataFrame()
 
 # --- OPTIMIZED CREDENTIALS ---
 @st.cache_data(ttl=600)
 def prepare_credentials(_df_users):
     creds = {"usernames": {}}
-    if not _df_users.empty:
+    if isinstance(_df_users, pd.DataFrame) and not _df_users.empty:
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
         raw_passwords = active_users['Password'].astype(str).str.strip().tolist()
-        hashed_passwords = stauth.Hasher.hash_passwords(raw_passwords)
+        
+        # Tương thích đa phiên bản stauth
+        try:
+            hashed_passwords = stauth.Hasher.hash_passwords(raw_passwords)
+        except AttributeError:
+            hashed_passwords = stauth.Hasher(raw_passwords).generate()
         
         for i, (_, row) in enumerate(active_users.iterrows()):
             email = str(row['MAIL']).strip()
@@ -76,47 +95,52 @@ def prepare_credentials(_df_users):
 def build_faq_catalog(root_folder_id):
     catalog = {} 
     root_items = get_files_in_folder(root_folder_id)
-    faq_data_folder = next((item for item in root_items if isinstance(item, dict) and item.get('name') == 'faq_data'), None)
+    if not isinstance(root_items, list): return catalog
     
-    if not faq_data_folder:
-        return catalog
+    faq_data_folder = next((item for item in root_items if isinstance(item, dict) and item.get('name') == 'faq_data'), None)
+    if not faq_data_folder: return catalog
 
-    lang_folders = get_files_in_folder(faq_data_folder['id'])
-    for lang in lang_folders:
-        if not isinstance(lang, dict): continue
-        lang_name = lang.get('name')
-        if not lang_name: continue
-        catalog[lang_name] = {}
-        
-        brand_folders = get_files_in_folder(lang['id'])
-        for brand in brand_folders:
-            if not isinstance(brand, dict): continue
-            brand_name = brand.get('name')
-            if not brand_name: continue
-            catalog[lang_name][brand_name] = []
+    lang_folders = get_files_in_folder(faq_data_folder.get('id'))
+    if isinstance(lang_folders, list):
+        for lang in lang_folders:
+            if not isinstance(lang, dict): continue
+            lang_name = lang.get('name')
+            if not lang_name: continue
+            catalog[lang_name] = {}
             
-            docs = get_files_in_folder(brand['id'])
-            for doc in docs:
-                if isinstance(doc, dict) and doc.get('mimeType') != 'application/vnd.google-apps.folder':
-                    catalog[lang_name][brand_name].append({
-                        'file_name': doc.get('name'),
-                        'file_id': doc.get('id'),
-                        'mime_type': doc.get('mimeType')
-                    })
+            brand_folders = get_files_in_folder(lang.get('id'))
+            if isinstance(brand_folders, list):
+                for brand in brand_folders:
+                    if not isinstance(brand, dict): continue
+                    brand_name = brand.get('name')
+                    if not brand_name: continue
+                    catalog[lang_name][brand_name] = []
+                    
+                    docs = get_files_in_folder(brand.get('id'))
+                    if isinstance(docs, list):
+                        for doc in docs:
+                            if isinstance(doc, dict) and doc.get('mimeType') != 'application/vnd.google-apps.folder':
+                                catalog[lang_name][brand_name].append({
+                                    'file_name': doc.get('name'),
+                                    'file_id': doc.get('id'),
+                                    'mime_type': doc.get('mimeType')
+                                })
     return catalog
 
 # --- 5. DATA EXTRACTION FOR AI CONTEXT ---
 def extract_document_context(catalog, selected_lang, selected_client):
-    """Retrieve file metadata as text context"""
     context = ""
-    if selected_lang in catalog and selected_client in catalog[selected_lang]:
-        files = catalog[selected_lang][selected_client]
-        context += f"--- DOCUMENTS FOR {selected_client.upper()} ({selected_lang.upper()}) ---\n"
-        for f in files:
-            context += f"Document Title: {f['file_name']}\n"
-            # Tính năng đọc sâu nội dung PDF/Excel sẽ được nối vào khối này sau khi ổn định kiến trúc
-            context += f"[The content of {f['file_name']} is currently being referenced by the system.]\n"
-    else:
+    if isinstance(catalog, dict) and selected_lang in catalog:
+        lang_dict = catalog.get(selected_lang, {})
+        if isinstance(lang_dict, dict) and selected_client in lang_dict:
+            files = lang_dict.get(selected_client, [])
+            if isinstance(files, list):
+                context += f"--- DOCUMENTS FOR {str(selected_client).upper()} ({str(selected_lang).upper()}) ---\n"
+                for f in files:
+                    if isinstance(f, dict):
+                        context += f"Document Title: {f.get('file_name', 'Unknown Document')}\n"
+                        context += f"[The content of {f.get('file_name')} is currently being referenced by the system.]\n"
+    if not context:
         context = "No specific documents found for this selection."
     return context
 
@@ -124,7 +148,6 @@ def extract_document_context(catalog, selected_lang, selected_client):
 def generate_gemini_response(query, context, client_name, region):
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
-        
         prompt = f"""
         You are a strict and precise Customer Service (CS) Assistant for ADA.
         Your task is to answer inquiries regarding the Client: {client_name} in Region: {region}.
@@ -140,7 +163,6 @@ def generate_gemini_response(query, context, client_name, region):
         
         Agent Query: {query}
         """
-        
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -185,7 +207,7 @@ try:
         with st.spinner("Syncing FAQ document repository..."):
             faq_catalog = build_faq_catalog(ROOT_FOLDER_ID)
             
-        if not faq_catalog:
+        if not faq_catalog or not isinstance(faq_catalog, dict):
             st.warning("No FAQ data found in the Google Drive folder.")
         else:
             available_languages = list(faq_catalog.keys())
@@ -197,14 +219,15 @@ try:
             st.write("**:speech_balloon: Conversation:**")
             chat_container = st.container(height=400, border=True)
             
-            available_brands = list(faq_catalog[selected_lang].keys()) if selected_lang in faq_catalog else []
+            lang_dict = faq_catalog.get(selected_lang, {}) if isinstance(faq_catalog, dict) else {}
+            available_brands = list(lang_dict.keys()) if isinstance(lang_dict, dict) else []
+            
             col_client, col_brand = st.columns(2)
             with col_client:
                 selected_client = st.selectbox("Client", available_brands)
             with col_brand:
                 st.selectbox("Store", ["All Stores"]) 
             
-            # Làm sạch Session State để chống lỗi ép kiểu dữ liệu chuỗi    
             if 'messages' not in st.session_state:
                 st.session_state.messages = []
             else:
