@@ -17,7 +17,6 @@ st.set_page_config(page_title="CSADA FAQ System", page_icon="🏢", layout="wide
 def get_drive_service():
     raw_creds = st.secrets["gcp_service_account"]
     
-    # Ép kiểu dữ liệu đa tầng để chặn mọi lỗi cấu trúc từ TOML
     creds_info = {}
     if isinstance(raw_creds, str):
         try:
@@ -41,7 +40,6 @@ def get_drive_service():
     creds = service_account.Credentials.from_service_account_info(creds_dict)
     return build('drive', 'v3', credentials=creds)
 
-# Đưa khởi tạo ra ngoài để đảm bảo nó không phá vỡ UI nếu fail
 try:
     drive_service = get_drive_service()
 except Exception as e:
@@ -91,23 +89,24 @@ def prepare_credentials(_df_users):
     creds = {"usernames": {}}
     if isinstance(_df_users, pd.DataFrame) and not _df_users.empty:
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
-        raw_passwords = active_users['Password'].astype(str).str.strip().tolist()
         
-        try:
-            hashed_passwords = stauth.Hasher.hash_passwords(raw_passwords)
-        except AttributeError:
-            hashed_passwords = stauth.Hasher(raw_passwords).generate()
-        
+        # Bước 1: Nạp password thô vào cấu trúc chuẩn của stauth
         for i, (_, row) in enumerate(active_users.iterrows()):
             email = str(row['MAIL']).strip()
-            # Bổ sung các trường mặc định để phòng hờ thư viện stauth phiên bản mới yêu cầu
             creds["usernames"][email] = {
                 "email": email,
                 "name": str(row['NAME']).strip(),
-                "password": hashed_passwords[i],
+                "password": str(row['Password']).strip(), # Đưa pass thô vào
                 "logged_in": False,
                 "failed_login_attempts": 0
             }
+            
+        # Bước 2: Gọi stauth mã hóa trực tiếp trên cả khối dictionary
+        try:
+            stauth.Hasher.hash_passwords(creds)
+        except Exception as e:
+            print(f"Lỗi Hashing: {e}")
+            
     return creds
 
 # --- 4. SCAN AND CATEGORIZE FAQ DATA ---
@@ -283,6 +282,5 @@ try:
 
 except Exception as e:
     st.error(f"Critical System Error: {e}")
-    # BỘ NỘI SOI: Hiển thị nguyên nhân và dòng code gây lỗi chi tiết nhất
     with st.expander("Bấm vào đây để xem chi tiết mã lỗi (Traceback)"):
         st.code(traceback.format_exc())
