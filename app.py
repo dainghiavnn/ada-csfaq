@@ -5,28 +5,33 @@ import time
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import streamlit_authenticator as stauth
+import google.generativeai as genai
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="CSADA FAQ System", page_icon="🏢", layout="wide")
 
-# --- 1. INITIALIZE DRIVE API CONNECTION (Safeguarded) ---
+# --- 1. SAFEGUARDED DRIVE & GEMINI API CONNECTION ---
 @st.cache_resource
 def get_drive_service():
-    creds_info = st.secrets["gcp_service_account"]
+    raw_creds = st.secrets["gcp_service_account"]
     
-    # SAFEGUARD: Fix the "list indices must be integers" error if TOML parsed as a list
-    if isinstance(creds_info, list):
-        creds_info = creds_info[0]
-    creds_info = dict(creds_info)
-    
-    creds = service_account.Credentials.from_service_account_info(creds_info)
+    # Ép kiểu dữ liệu tàn nhẫn để chặn đứng lỗi 'list indices must be integers'
+    if isinstance(raw_creds, (list, tuple)):
+        creds_info = raw_creds[0]
+    else:
+        creds_info = raw_creds
+        
+    creds_dict = {str(k): str(v) for k, v in creds_info.items()}
+    creds = service_account.Credentials.from_service_account_info(creds_dict)
     return build('drive', 'v3', credentials=creds)
 
 drive_service = get_drive_service()
 
-# --- 2. RECURSIVE FOLDER SCANNING FUNCTION ---
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+
+# --- 2. RECURSIVE FOLDER SCANNING ---
 def get_files_in_folder(folder_id):
-    """Retrieve all files and subfolders within a folder ID"""
     query = f"'{folder_id}' in parents and trashed=false"
     results = drive_service.files().list(
         q=query, 
@@ -39,7 +44,7 @@ def get_files_in_folder(folder_id):
 def load_users(root_folder_id):
     items = get_files_in_folder(root_folder_id)
     for item in items:
-        if item.get('name') == 'CSADA-UserDetail':
+        if isinstance(item, dict) and item.get('name') == 'CSADA-UserDetail':
             request = drive_service.files().export_media(
                 fileId=item['id'],
                 mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -48,10 +53,9 @@ def load_users(root_folder_id):
             return pd.read_excel(file_stream)
     return pd.DataFrame()
 
-# --- OPTIMIZED CREDENTIALS PREPARATION ---
+# --- OPTIMIZED CREDENTIALS ---
 @st.cache_data(ttl=600)
 def prepare_credentials(_df_users):
-    """Process password hashing once and cache for 10 minutes"""
     creds = {"usernames": {}}
     if not _df_users.empty:
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
@@ -61,43 +65,86 @@ def prepare_credentials(_df_users):
         for i, (_, row) in enumerate(active_users.iterrows()):
             email = str(row['MAIL']).strip()
             creds["usernames"][email] = {
-                "email": email, # Added to strictly comply with stauth schema
+                "email": email,
                 "name": str(row['NAME']).strip(),
                 "password": hashed_passwords[i]
             }
     return creds
 
-# --- 4. SCAN AND CATEGORIZE FAQ DATA (LANGUAGE -> BRAND) ---
+# --- 4. SCAN AND CATEGORIZE FAQ DATA ---
 @st.cache_data(ttl=3600)
 def build_faq_catalog(root_folder_id):
     catalog = {} 
     root_items = get_files_in_folder(root_folder_id)
-    faq_data_folder = next((item for item in root_items if item.get('name') == 'faq_data'), None)
+    faq_data_folder = next((item for item in root_items if isinstance(item, dict) and item.get('name') == 'faq_data'), None)
     
     if not faq_data_folder:
         return catalog
 
     lang_folders = get_files_in_folder(faq_data_folder['id'])
     for lang in lang_folders:
+        if not isinstance(lang, dict): continue
         lang_name = lang.get('name')
         if not lang_name: continue
         catalog[lang_name] = {}
         
         brand_folders = get_files_in_folder(lang['id'])
         for brand in brand_folders:
+            if not isinstance(brand, dict): continue
             brand_name = brand.get('name')
             if not brand_name: continue
             catalog[lang_name][brand_name] = []
             
             docs = get_files_in_folder(brand['id'])
             for doc in docs:
-                if doc.get('mimeType') != 'application/vnd.google-apps.folder':
+                if isinstance(doc, dict) and doc.get('mimeType') != 'application/vnd.google-apps.folder':
                     catalog[lang_name][brand_name].append({
                         'file_name': doc.get('name'),
                         'file_id': doc.get('id'),
                         'mime_type': doc.get('mimeType')
                     })
     return catalog
+
+# --- 5. DATA EXTRACTION FOR AI CONTEXT ---
+def extract_document_context(catalog, selected_lang, selected_client):
+    """Retrieve file metadata as text context"""
+    context = ""
+    if selected_lang in catalog and selected_client in catalog[selected_lang]:
+        files = catalog[selected_lang][selected_client]
+        context += f"--- DOCUMENTS FOR {selected_client.upper()} ({selected_lang.upper()}) ---\n"
+        for f in files:
+            context += f"Document Title: {f['file_name']}\n"
+            # Tính năng đọc sâu nội dung PDF/Excel sẽ được nối vào khối này sau khi ổn định kiến trúc
+            context += f"[The content of {f['file_name']} is currently being referenced by the system.]\n"
+    else:
+        context = "No specific documents found for this selection."
+    return context
+
+# --- 6. GEMINI 1.5 FLASH ENGINE ---
+def generate_gemini_response(query, context, client_name, region):
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        prompt = f"""
+        You are a strict and precise Customer Service (CS) Assistant for ADA.
+        Your task is to answer inquiries regarding the Client: {client_name} in Region: {region}.
+        
+        STRICT RULES:
+        1. YOU MUST BASE YOUR ANSWER ONLY ON THE "CONTEXT BOX" BELOW.
+        2. If the context box does not contain the answer, reply strictly: "Information not found in the current {client_name} FAQ repository."
+        3. Do not assume, hallucinate, or bring outside knowledge.
+        
+        [CONTEXT BOX START]
+        {context}
+        [CONTEXT BOX END]
+        
+        Agent Query: {query}
+        """
+        
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"AI Engine Error: {e}"
 
 # ==========================================
 # MAIN INTERFACE & LOGIN FLOW
@@ -125,7 +172,7 @@ try:
         st.info('ℹ️ Please enter your internal account credentials.')
     elif authentication_status:
         # ==========================================
-        # INTERACT WINDOW (Only rendered upon successful login)
+        # INTERACT WINDOW
         # ==========================================
         col_welcome, col_logout = st.columns([5, 1])
         with col_welcome:
@@ -143,12 +190,10 @@ try:
         else:
             available_languages = list(faq_catalog.keys())
             
-            # Left Sidebar
             with st.sidebar:
                 st.write("### Settings")
-                selected_lang = st.selectbox("Language", available_languages)
+                selected_lang = st.selectbox("Language / Region", available_languages)
                 
-            # Main Chat Area
             st.write("**:speech_balloon: Conversation:**")
             chat_container = st.container(height=400, border=True)
             
@@ -157,17 +202,18 @@ try:
             with col_client:
                 selected_client = st.selectbox("Client", available_brands)
             with col_brand:
-                st.selectbox("Brand", ["All Brands"]) 
-                
+                st.selectbox("Store", ["All Stores"]) 
+            
+            # Làm sạch Session State để chống lỗi ép kiểu dữ liệu chuỗi    
             if 'messages' not in st.session_state:
                 st.session_state.messages = []
+            else:
+                st.session_state.messages = [m for m in st.session_state.messages if isinstance(m, dict)]
 
-            # SAFEGUARD: Render messages securely to avoid old cache index errors
             with chat_container:
                 for message in st.session_state.messages:
-                    if isinstance(message, dict) and "role" in message and "content" in message:
-                        with st.chat_message(message["role"]):
-                            st.markdown(message["content"])
+                    with st.chat_message(message.get("role", "unknown")):
+                        st.markdown(message.get("content", ""))
 
             if prompt := st.chat_input("Enter your FAQ query here..."):
                 with chat_container:
@@ -178,13 +224,19 @@ try:
                 with chat_container:
                     with st.chat_message("assistant"):
                         message_placeholder = st.empty()
-                        message_placeholder.markdown("Searching documents... ⏳")
-                        time.sleep(1.5)
+                        message_placeholder.markdown(f"Generating context for **{selected_client}**... ⏳")
                         
-                        response_text = f"Received query: '{prompt}'. AI will read documents for Region: **{selected_lang}** | Client: **{selected_client}**."
+                        document_context = extract_document_context(faq_catalog, selected_lang, selected_client)
+                        
+                        if "GEMINI_API_KEY" not in st.secrets:
+                            response_text = "System alert: GEMINI_API_KEY is missing in Streamlit Secrets."
+                        else:
+                            message_placeholder.markdown("AI is processing the query... 🧠")
+                            response_text = generate_gemini_response(prompt, document_context, selected_client, selected_lang)
+                        
                         message_placeholder.markdown(response_text)
                         
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
 
 except Exception as e:
-    st.error(f"System error: {e}")
+    st.error(f"Critical System Error: {e}")
