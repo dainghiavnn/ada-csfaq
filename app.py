@@ -11,7 +11,7 @@ st.set_page_config(page_title="Hệ thống FAQ Nôi bộ", page_icon="🏢", la
 
 # Mô phỏng dữ liệu user (Trong thực tế, nên lưu password đã hash trong DB hoặc Sheets)
 # Password '123' đã được hash (admin: 123, user1: 123)
-hashed_passwords = stauth.Hasher(['123', '123']).generate()
+hashed_passwords = stauth.Hasher.hash_passwords(['123', '123'])
 
 config = {
     'credentials': {
