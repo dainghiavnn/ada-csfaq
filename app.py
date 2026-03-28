@@ -4,7 +4,9 @@ import io
 import time
 import json
 import traceback
-import bcrypt  # [MỚI] Bổ sung thư viện băm mật khẩu lõi
+import bcrypt
+import PyPDF2
+import docx
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import streamlit_authenticator as stauth
@@ -84,13 +86,11 @@ def load_users(root_folder_id):
                     return pd.read_excel(file_stream)
     return pd.DataFrame()
 
-# --- OPTIMIZED CREDENTIALS (SỬA LỖI HASHING) ---
-@st.cache_data(ttl=600)
+# --- OPTIMIZED CREDENTIALS ---
 @st.cache_data(ttl=600)
 def prepare_credentials(_df_users):
     creds = {"usernames": {}}
     
-    # 1. Nạp danh sách user từ Google Sheet
     if isinstance(_df_users, pd.DataFrame) and not _df_users.empty:
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
         
@@ -111,7 +111,6 @@ def prepare_credentials(_df_users):
                 "failed_login_attempts": 0
             }
             
-    # 2. Tiêm tài khoản Admin mặc định (Hardcoded)
     admin_username = "admin"
     admin_plain_pass = "ADA@Vn"
     admin_hashed_pass = bcrypt.hashpw(admin_plain_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -163,7 +162,44 @@ def build_faq_catalog(root_folder_id):
                                 })
     return catalog
 
-# --- 5. DATA EXTRACTION FOR AI CONTEXT ---
+# --- 5. HÀM MỚI: BÓC TÁCH NỘI DUNG TÀI LIỆU VẬT LÝ ---
+def read_file_content(file_id, mime_type):
+    try:
+        if mime_type == 'application/vnd.google-apps.document':
+            request = drive_service.files().export_media(fileId=file_id, mimeType='text/plain')
+            return request.execute().decode('utf-8')
+            
+        elif mime_type == 'application/vnd.google-apps.spreadsheet':
+            request = drive_service.files().export_media(fileId=file_id, mimeType='text/csv')
+            return request.execute().decode('utf-8')
+            
+        else:
+            request = drive_service.files().get_media(fileId=file_id)
+            file_stream = io.BytesIO(request.execute())
+            
+            if mime_type == 'application/pdf':
+                reader = PyPDF2.PdfReader(file_stream)
+                text = ""
+                for page in reader.pages:
+                    extracted = page.extract_text()
+                    if extracted:
+                        text += extracted + "\n"
+                return text
+                
+            elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+                doc = docx.Document(file_stream)
+                return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+                
+            elif mime_type == 'text/plain':
+                return file_stream.read().decode('utf-8')
+                
+            else:
+                return f"[Hệ thống chưa hỗ trợ trích xuất văn bản từ định dạng MIME: {mime_type}]"
+                
+    except Exception as e:
+        return f"[Xảy ra lỗi trong quá trình phân tích nhị phân: {e}]"
+
+# --- 5.1 DATA EXTRACTION FOR AI CONTEXT (NÂNG CẤP ĐỌC SÂU) ---
 def extract_document_context(catalog, selected_lang, selected_client):
     context = ""
     if isinstance(catalog, dict) and selected_lang in catalog:
@@ -171,19 +207,28 @@ def extract_document_context(catalog, selected_lang, selected_client):
         if isinstance(lang_dict, dict) and selected_client in lang_dict:
             files = lang_dict.get(selected_client, [])
             if isinstance(files, list):
-                context += f"--- DOCUMENTS FOR {str(selected_client).upper()} ({str(selected_lang).upper()}) ---\n"
+                context += f"--- NGUỒN TÀI LIỆU {str(selected_client).upper()} ({str(selected_lang).upper()}) ---\n"
                 for f in files:
                     if isinstance(f, dict):
-                        context += f"Document Title: {f.get('file_name', 'Unknown Document')}\n"
-                        context += f"[The content of {f.get('file_name')} is currently being referenced by the system.]\n"
-    if not context:
+                        file_name = f.get('file_name', 'Unknown Document')
+                        file_id = f.get('file_id')
+                        mime_type = f.get('mime_type')
+                        
+                        context += f"\n>> Tài liệu: {file_name}\n"
+                        if file_id and mime_type:
+                            file_content = read_file_content(file_id, mime_type)
+                            context += f"--- NỘI DUNG ---\n{file_content}\n"
+                        else:
+                            context += "[Lỗi cấu trúc siêu dữ liệu, không thể tải file]\n"
+                            
+    if not context.strip():
         context = "No specific documents found for this selection."
     return context
 
 # --- 6. GEMINI 1.5 FLASH ENGINE ---
 def generate_gemini_response(query, context, client_name, region):
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         prompt = f"""
         You are a strict and precise Customer Service (CS) Assistant for ADA.
         Your task is to answer inquiries regarding the Client: {client_name} in Region: {region}.
@@ -245,11 +290,11 @@ try:
             
         st.divider()
         
-        with st.spinner("Syncing FAQ document repository..."):
+        with st.spinner("Đang đồng bộ hóa kho dữ liệu FAQ..."):
             faq_catalog = build_faq_catalog(ROOT_FOLDER_ID)
             
         if not faq_catalog or not isinstance(faq_catalog, dict):
-            st.warning("No FAQ data found in the Google Drive folder.")
+            st.warning("Hệ thống không tìm thấy dữ liệu FAQ hợp lệ trong máy chủ.")
         else:
             available_languages = list(faq_catalog.keys())
             
@@ -288,14 +333,14 @@ try:
                 with chat_container:
                     with st.chat_message("assistant"):
                         message_placeholder = st.empty()
-                        message_placeholder.markdown(f"Generating context for **{selected_client}**... ⏳")
+                        message_placeholder.markdown(f"Đang bóc tách dữ liệu vật lý của **{selected_client}**... Khối lượng công việc này có thể tiêu tốn vài giây ⏳")
                         
                         document_context = extract_document_context(faq_catalog, selected_lang, selected_client)
                         
                         if "GEMINI_API_KEY" not in st.secrets:
-                            response_text = "System alert: GEMINI_API_KEY is missing in Streamlit Secrets."
+                            response_text = "Cảnh báo an ninh: Không tìm thấy khóa giao tiếp GEMINI_API_KEY."
                         else:
-                            message_placeholder.markdown("AI is processing the query... 🧠")
+                            message_placeholder.markdown("Bộ não AI đang phân tích dữ liệu văn bản... 🧠")
                             response_text = generate_gemini_response(prompt, document_context, selected_client, selected_lang)
                         
                         message_placeholder.markdown(response_text)
@@ -303,6 +348,6 @@ try:
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
 
 except Exception as e:
-    st.error(f"Critical System Error: {e}")
-    with st.expander("Bấm vào đây để xem chi tiết mã lỗi (Traceback)"):
+    st.error(f"Xung đột mã nguồn nghiêm trọng: {e}")
+    with st.expander("Gỡ lỗi kỹ thuật (Traceback)"):
         st.code(traceback.format_exc())
