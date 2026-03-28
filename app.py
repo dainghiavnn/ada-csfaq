@@ -42,20 +42,16 @@ def load_users(root_folder_id):
             return pd.read_excel(file_stream)
     return pd.DataFrame()
 
-# --- OPTIMIZED CREDENTIALS PREPARATION (CACHE HASHING) ---
+# --- OPTIMIZED CREDENTIALS PREPARATION ---
 @st.cache_data(ttl=600)
 def prepare_credentials(_df_users):
     """Process password hashing once and cache for 10 minutes"""
     creds = {"usernames": {}}
     if not _df_users.empty:
-        # Filter active users
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
-        
-        # Batch hash passwords
         raw_passwords = active_users['Password'].astype(str).str.strip().tolist()
         hashed_passwords = stauth.Hasher.hash_passwords(raw_passwords)
         
-        # Map into dictionary
         for i, (_, row) in enumerate(active_users.iterrows()):
             email = str(row['MAIL']).strip()
             creds["usernames"][email] = {
@@ -64,9 +60,13 @@ def prepare_credentials(_df_users):
             }
     return creds
 
-# --- 4. SCAN AND CATEGORIZE FAQ DATA BY BRAND ---
+# --- 4. SCAN AND CATEGORIZE FAQ DATA (LANGUAGE -> BRAND) ---
 @st.cache_data(ttl=3600)
 def build_faq_catalog(root_folder_id):
+    """
+    Returns a nested dictionary: 
+    catalog['en']['ulv-ahc'] = [{'file_name': '...', 'id': '...'}, ...]
+    """
     catalog = {} 
     root_items = get_files_in_folder(root_folder_id)
     faq_data_folder = next((item for item in root_items if item['name'] == 'faq_data'), None)
@@ -74,17 +74,23 @@ def build_faq_catalog(root_folder_id):
     if not faq_data_folder:
         return catalog
 
+    # Level 1: Language Folders (e.g., vi-vn, en)
     lang_folders = get_files_in_folder(faq_data_folder['id'])
     for lang in lang_folders:
+        lang_name = lang['name']
+        catalog[lang_name] = {}
+        
+        # Level 2: Client/Brand Folders (e.g., ulv-ahc)
         brand_folders = get_files_in_folder(lang['id'])
         for brand in brand_folders:
             brand_name = brand['name']
-            catalog[brand_name] = []
+            catalog[lang_name][brand_name] = []
             
+            # Level 3: FAQ Documents
             docs = get_files_in_folder(brand['id'])
             for doc in docs:
                 if doc['mimeType'] != 'application/vnd.google-apps.folder':
-                    catalog[brand_name].append({
+                    catalog[lang_name][brand_name].append({
                         'file_name': doc['name'],
                         'file_id': doc['id'],
                         'mime_type': doc['mimeType']
@@ -101,7 +107,6 @@ try:
         df_users = load_users(ROOT_FOLDER_ID)
         credentials = prepare_credentials(df_users)
         
-    # 1. Initialize Authenticator
     authenticator = stauth.Authenticate(
         credentials,
         "cs_faq_cookie",
@@ -109,11 +114,9 @@ try:
         cookie_expiry_days=30
     )
 
-    # 2. Display Login Form
     st.subheader('CSADA FAQ Portal Login')
     name, authentication_status, username = authenticator.login(location='main')
 
-    # 3. Navigation Barrier (Only allow access if True)
     if authentication_status == False:
         st.error('❌ Incorrect Email or Password. Please try again.')
     elif authentication_status == None:
@@ -122,10 +125,10 @@ try:
         # ==========================================
         # INTERACT WINDOW (Only rendered upon successful login)
         # ==========================================
-        col1, col2 = st.columns([5, 1])
-        with col1:
-            st.success(f"Login successful! Welcome **{name}**.")
-        with col2:
+        col_welcome, col_logout = st.columns([5, 1])
+        with col_welcome:
+            st.markdown(f"**Welcome {name}**")
+        with col_logout:
             authenticator.logout('Logout', 'main')
             
         st.divider()
@@ -136,42 +139,52 @@ try:
         if not faq_catalog:
             st.warning("No FAQ data found in the Google Drive folder.")
         else:
-            # Dropdown chọn Brand / Store
-            col_brand, col_store = st.columns(2)
-            with col_brand:
-                selected_brand = st.selectbox("Brand:", list(faq_catalog.keys()))
-            with col_store:
-                st.selectbox("Store:", ["All Stores"])
+            # --- LAYOUT SETUP (Mockup Match) ---
+            available_languages = list(faq_catalog.keys())
             
+            # Left Sidebar for Language Selection
+            with st.sidebar:
+                st.write("### Settings")
+                selected_lang = st.selectbox("Language", available_languages)
+                
+            # Main Area for Conversation
+            st.write("**:speech_balloon: Conversation:**")
+            chat_container = st.container(height=400, border=True)
+            
+            # Bottom Dropdowns for Client & Brand
+            available_brands = list(faq_catalog[selected_lang].keys()) if selected_lang in faq_catalog else []
+            col_client, col_brand = st.columns(2)
+            with col_client:
+                # Assuming folder names like 'ulv-ahc' represent the Client/Brand combo.
+                selected_client = st.selectbox("Client", available_brands)
+            with col_brand:
+                # Placeholder for Brand/Store secondary filter if needed in the future
+                st.selectbox("Brand", ["All Brands"]) 
+                
             # Manage Chat State
             if 'messages' not in st.session_state:
                 st.session_state.messages = []
 
-            st.write("**:speech_balloon: Conversation:**")
-            chat_container = st.container(height=400, border=True)
-            
-            # Render lịch sử tin nhắn
+            # Render Message History
             with chat_container:
                 for message in st.session_state.messages:
                     with st.chat_message(message["role"]):
                         st.markdown(message["content"])
 
-            # Khung nhập liệu (Chat Input)
-            if prompt := st.chat_input("**:question: Enter your FAQ query here...**"):
-                # Render câu hỏi
+            # Chat Input Field
+            if prompt := st.chat_input("Enter your FAQ query here..."):
                 with chat_container:
                     with st.chat_message("user"):
                         st.markdown(prompt)
                 st.session_state.messages.append({"role": "user", "content": prompt})
 
-                # Render luồng AI xử lý (Sẽ kết nối Gemini ở bước sau)
                 with chat_container:
                     with st.chat_message("assistant"):
                         message_placeholder = st.empty()
                         message_placeholder.markdown("Searching documents... ⏳")
                         time.sleep(1.5)
                         
-                        response_text = f"Received query: '{prompt}'. AI document reading feature for **{selected_brand}** will be integrated here."
+                        response_text = f"Received query: '{prompt}'. AI will read documents for Region: **{selected_lang}** | Client: **{selected_client}**."
                         message_placeholder.markdown(response_text)
                         
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
