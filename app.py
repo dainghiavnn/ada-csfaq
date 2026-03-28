@@ -9,10 +9,16 @@ import streamlit_authenticator as stauth
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="CSADA FAQ System", page_icon="🏢", layout="wide")
 
-# --- 1. INITIALIZE DRIVE API CONNECTION ---
+# --- 1. INITIALIZE DRIVE API CONNECTION (Safeguarded) ---
 @st.cache_resource
 def get_drive_service():
     creds_info = st.secrets["gcp_service_account"]
+    
+    # SAFEGUARD: Fix the "list indices must be integers" error if TOML parsed as a list
+    if isinstance(creds_info, list):
+        creds_info = creds_info[0]
+    creds_info = dict(creds_info)
+    
     creds = service_account.Credentials.from_service_account_info(creds_info)
     return build('drive', 'v3', credentials=creds)
 
@@ -33,7 +39,7 @@ def get_files_in_folder(folder_id):
 def load_users(root_folder_id):
     items = get_files_in_folder(root_folder_id)
     for item in items:
-        if item['name'] == 'CSADA-UserDetail':
+        if item.get('name') == 'CSADA-UserDetail':
             request = drive_service.files().export_media(
                 fileId=item['id'],
                 mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -55,6 +61,7 @@ def prepare_credentials(_df_users):
         for i, (_, row) in enumerate(active_users.iterrows()):
             email = str(row['MAIL']).strip()
             creds["usernames"][email] = {
+                "email": email, # Added to strictly comply with stauth schema
                 "name": str(row['NAME']).strip(),
                 "password": hashed_passwords[i]
             }
@@ -63,37 +70,32 @@ def prepare_credentials(_df_users):
 # --- 4. SCAN AND CATEGORIZE FAQ DATA (LANGUAGE -> BRAND) ---
 @st.cache_data(ttl=3600)
 def build_faq_catalog(root_folder_id):
-    """
-    Returns a nested dictionary: 
-    catalog['en']['ulv-ahc'] = [{'file_name': '...', 'id': '...'}, ...]
-    """
     catalog = {} 
     root_items = get_files_in_folder(root_folder_id)
-    faq_data_folder = next((item for item in root_items if item['name'] == 'faq_data'), None)
+    faq_data_folder = next((item for item in root_items if item.get('name') == 'faq_data'), None)
     
     if not faq_data_folder:
         return catalog
 
-    # Level 1: Language Folders (e.g., vi-vn, en)
     lang_folders = get_files_in_folder(faq_data_folder['id'])
     for lang in lang_folders:
-        lang_name = lang['name']
+        lang_name = lang.get('name')
+        if not lang_name: continue
         catalog[lang_name] = {}
         
-        # Level 2: Client/Brand Folders (e.g., ulv-ahc)
         brand_folders = get_files_in_folder(lang['id'])
         for brand in brand_folders:
-            brand_name = brand['name']
+            brand_name = brand.get('name')
+            if not brand_name: continue
             catalog[lang_name][brand_name] = []
             
-            # Level 3: FAQ Documents
             docs = get_files_in_folder(brand['id'])
             for doc in docs:
-                if doc['mimeType'] != 'application/vnd.google-apps.folder':
+                if doc.get('mimeType') != 'application/vnd.google-apps.folder':
                     catalog[lang_name][brand_name].append({
-                        'file_name': doc['name'],
-                        'file_id': doc['id'],
-                        'mime_type': doc['mimeType']
+                        'file_name': doc.get('name'),
+                        'file_id': doc.get('id'),
+                        'mime_type': doc.get('mimeType')
                     })
     return catalog
 
@@ -139,39 +141,34 @@ try:
         if not faq_catalog:
             st.warning("No FAQ data found in the Google Drive folder.")
         else:
-            # --- LAYOUT SETUP (Mockup Match) ---
             available_languages = list(faq_catalog.keys())
             
-            # Left Sidebar for Language Selection
+            # Left Sidebar
             with st.sidebar:
                 st.write("### Settings")
                 selected_lang = st.selectbox("Language", available_languages)
                 
-            # Main Area for Conversation
+            # Main Chat Area
             st.write("**:speech_balloon: Conversation:**")
             chat_container = st.container(height=400, border=True)
             
-            # Bottom Dropdowns for Client & Brand
             available_brands = list(faq_catalog[selected_lang].keys()) if selected_lang in faq_catalog else []
             col_client, col_brand = st.columns(2)
             with col_client:
-                # Assuming folder names like 'ulv-ahc' represent the Client/Brand combo.
                 selected_client = st.selectbox("Client", available_brands)
             with col_brand:
-                # Placeholder for Brand/Store secondary filter if needed in the future
                 st.selectbox("Brand", ["All Brands"]) 
                 
-            # Manage Chat State
             if 'messages' not in st.session_state:
                 st.session_state.messages = []
 
-            # Render Message History
+            # SAFEGUARD: Render messages securely to avoid old cache index errors
             with chat_container:
                 for message in st.session_state.messages:
-                    with st.chat_message(message["role"]):
-                        st.markdown(message["content"])
+                    if isinstance(message, dict) and "role" in message and "content" in message:
+                        with st.chat_message(message["role"]):
+                            st.markdown(message["content"])
 
-            # Chat Input Field
             if prompt := st.chat_input("Enter your FAQ query here..."):
                 with chat_container:
                     with st.chat_message("user"):
