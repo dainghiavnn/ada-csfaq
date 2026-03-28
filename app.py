@@ -90,18 +90,16 @@ def prepare_credentials(_df_users):
     if isinstance(_df_users, pd.DataFrame) and not _df_users.empty:
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
         
-        # Bước 1: Nạp password thô vào cấu trúc chuẩn của stauth
         for i, (_, row) in enumerate(active_users.iterrows()):
             email = str(row['MAIL']).strip()
             creds["usernames"][email] = {
                 "email": email,
                 "name": str(row['NAME']).strip(),
-                "password": str(row['Password']).strip(), # Đưa pass thô vào
+                "password": str(row['Password']).strip(), 
                 "logged_in": False,
                 "failed_login_attempts": 0
             }
             
-        # Bước 2: Gọi stauth mã hóa trực tiếp trên cả khối dictionary
         try:
             stauth.Hasher.hash_passwords(creds)
         except Exception as e:
@@ -205,7 +203,13 @@ try:
     )
 
     st.subheader('CSADA FAQ Portal Login')
-    name, authentication_status, username = authenticator.login(location='main')
+    
+    # [FIX] Đổi luồng bóc tách dữ liệu theo kiến trúc mới nhất của stauth
+    authenticator.login(location='main')
+    
+    authentication_status = st.session_state.get("authentication_status")
+    name = st.session_state.get("name")
+    username = st.session_state.get("username")
 
     if authentication_status == False:
         st.error('❌ Incorrect Email or Password. Please try again.')
