@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import io
 import time
+import json
+import traceback
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import streamlit_authenticator as stauth
@@ -10,24 +12,41 @@ import google.generativeai as genai
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="CSADA FAQ System", page_icon="🏢", layout="wide")
 
-# --- 1. ROCK-SOLID DRIVE & GEMINI API CONNECTION ---
+# --- 1. BULLETPROOF DRIVE & GEMINI API CONNECTION ---
 @st.cache_resource
 def get_drive_service():
     raw_creds = st.secrets["gcp_service_account"]
     
-    # Ép kiểu phòng thủ tàn nhẫn để ngăn chặn lỗi List Indices từ TOML
-    if hasattr(raw_creds, "to_dict"):
+    # Ép kiểu dữ liệu đa tầng để chặn mọi lỗi cấu trúc từ TOML
+    creds_info = {}
+    if isinstance(raw_creds, str):
+        try:
+            creds_info = json.loads(raw_creds)
+        except Exception:
+            pass
+    elif hasattr(raw_creds, "to_dict"):
         creds_info = raw_creds.to_dict()
     elif isinstance(raw_creds, list) and len(raw_creds) > 0:
-        creds_info = dict(raw_creds[0])
-    else:
-        creds_info = dict(raw_creds)
-        
+        if isinstance(raw_creds[0], dict):
+            creds_info = raw_creds[0]
+        elif hasattr(raw_creds[0], "to_dict"):
+            creds_info = raw_creds[0].to_dict()
+    elif isinstance(raw_creds, dict):
+        creds_info = raw_creds
+
+    if not creds_info:
+        raise ValueError("Cannot parse Google Service Account credentials from secrets.")
+
     creds_dict = {str(k): str(v) for k, v in creds_info.items()}
     creds = service_account.Credentials.from_service_account_info(creds_dict)
     return build('drive', 'v3', credentials=creds)
 
-drive_service = get_drive_service()
+# Đưa khởi tạo ra ngoài để đảm bảo nó không phá vỡ UI nếu fail
+try:
+    drive_service = get_drive_service()
+except Exception as e:
+    st.error(f"Lỗi khởi tạo Drive API: {e}")
+    st.stop()
 
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
@@ -46,8 +65,7 @@ def get_files_in_folder(folder_id):
         if isinstance(results, dict):
             return results.get('files', [])
         return []
-    except Exception as e:
-        print(f"Drive API Warning: {e}")
+    except Exception:
         return []
 
 # --- 3. READ USER DETAIL FILE ---
@@ -75,7 +93,6 @@ def prepare_credentials(_df_users):
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
         raw_passwords = active_users['Password'].astype(str).str.strip().tolist()
         
-        # Tương thích đa phiên bản stauth
         try:
             hashed_passwords = stauth.Hasher.hash_passwords(raw_passwords)
         except AttributeError:
@@ -83,10 +100,13 @@ def prepare_credentials(_df_users):
         
         for i, (_, row) in enumerate(active_users.iterrows()):
             email = str(row['MAIL']).strip()
+            # Bổ sung các trường mặc định để phòng hờ thư viện stauth phiên bản mới yêu cầu
             creds["usernames"][email] = {
                 "email": email,
                 "name": str(row['NAME']).strip(),
-                "password": hashed_passwords[i]
+                "password": hashed_passwords[i],
+                "logged_in": False,
+                "failed_login_attempts": 0
             }
     return creds
 
@@ -263,3 +283,6 @@ try:
 
 except Exception as e:
     st.error(f"Critical System Error: {e}")
+    # BỘ NỘI SOI: Hiển thị nguyên nhân và dòng code gây lỗi chi tiết nhất
+    with st.expander("Bấm vào đây để xem chi tiết mã lỗi (Traceback)"):
+        st.code(traceback.format_exc())
