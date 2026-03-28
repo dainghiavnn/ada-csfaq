@@ -1,128 +1,97 @@
 import streamlit as st
-import streamlit_authenticator as stauth
-import yaml
-from yaml.loader import SafeLoader
-import time
+import pandas as pd
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+import io
 
-# --- CẤU HÌNH TRANG (UX) ---
-st.set_page_config(page_title="Hệ thống FAQ Nôi bộ", page_icon="🏢", layout="wide")
+# --- 1. KHỞI TẠO API KẾT NỐI (Đã dùng TOML Secrets) ---
+@st.cache_resource
+def get_drive_service():
+    creds_info = st.secrets["gcp_service_account"]
+    creds = service_account.Credentials.from_service_account_info(creds_info)
+    return build('drive', 'v3', credentials=creds)
 
-# --- 1. XỬ LÝ ĐĂNG NHẬP (Mô phỏng image_0.png) ---
+drive_service = get_drive_service()
 
-# Mô phỏng dữ liệu user (Trong thực tế, nên lưu password đã hash trong DB hoặc Sheets)
-# Password '123' đã được hash (admin: 123, user1: 123)
-hashed_passwords = stauth.Hasher.hash_passwords(['123', '123'])
+# --- 2. HÀM QUÉT THƯ MỤC ĐỆ QUY (Động cơ cốt lõi) ---
+def get_files_in_folder(folder_id):
+    """Lấy tất cả file và folder con bên trong một folder ID"""
+    query = f"'{folder_id}' in parents and trashed=false"
+    results = drive_service.files().list(
+        q=query, 
+        fields="files(id, name, mimeType)"
+    ).execute()
+    return results.get('files', [])
 
-config = {
-    'credentials': {
-        'usernames': {
-            'admin': {
-                'email': 'admin@company.com',
-                'name': 'Nguyễn Văn A (Admin)',
-                'password': hashed_passwords[0]
-            },
-            'user1': {
-                'email': 'user1@company.com',
-                'name': 'Trần Thị B',
-                'password': hashed_passwords[1]
-            }
-        }
-    },
-    'cookie': {
-        'expiry_days': 30,
-        'key': 'faq_signature_key', # Chuỗi ngẫu nhiên bất kỳ
-        'name': 'faq_cookie'
-    },
-    'preauthorized': {
-        'emails': ['admin@company.com']
-    }
-}
+# --- 3. ĐỌC FILE USER DETAIL ---
+@st.cache_data(ttl=600)
+def load_users(root_folder_id):
+    items = get_files_in_folder(root_folder_id)
+    for item in items:
+        if item['name'] == 'CSADA-UserDetail':
+            request = drive_service.files().get_media(fileId=item['id'])
+            file_stream = io.BytesIO(request.execute())
+            return pd.read_excel(file_stream)
+    return pd.DataFrame()
 
-# Khởi tạo bộ xác thực
-authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days'],
-    config['preauthorized']
-)
-
-# Hiển thị form đăng nhập (Streamlit tự xử lý giao diện giống image_0.png)
-name, authentication_status, username = authenticator.login('Đăng nhập Hệ thống FAQ', 'main')
-
-# --- 2. ĐIỀU HƯỚNG GIAO DIỆN DỰA TRÊN TRẠNG THÁI ---
-
-if authentication_status == False:
-    st.error('Username/Password không chính xác')
-
-elif authentication_status == None:
-    st.warning('Vui lòng nhập Username và Password')
-    # Tùy chỉnh thêm CSS để form login nhìn giống hệt image_0.png nếu cần
-
-elif authentication_status:
-    # --- 3. GIAO DIỆN CHAT CHÍNH (Mô phỏng image_1.png) ---
+# --- 4. QUÉT VÀ PHÂN LOẠI DỮ LIỆU FAQ THEO BRAND ---
+@st.cache_data(ttl=3600) # Cache 1 tiếng để tối ưu cho 50 user
+def build_faq_catalog(root_folder_id):
+    """
+    Hàm này sẽ tự động tìm folder 'faq_data', luồn vào 'vi-vn', 
+    và gom nhóm các file theo từng 'Brand' (VD: ulv-ahc)
+    """
+    catalog = {} # Dạng: {'ulv-ahc': [{'name': 'file1.pdf', 'id': '...'}, ...]}
     
-    # Header: Welcome & Logout (Giống image_1.png)
-    col_header1, col_header2 = st.columns([5, 1])
-    with col_header1:
-        st.markdown(f"### Welcome **{name}**")
-    with col_header2:
-        # Nút logout tự động xóa cookie và reset session
-        authenticator.logout('Logout', 'main')
-
-    st.divider()
-
-    # Layout chính: Conversation & Question (Giống image_1.png)
-    # Khởi tạo session state để lưu lịch sử chat
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
-
-    # Vùng hiển thị Conversation (Container có thanh cuộn)
-    st.write("**:speech_balloon: Conversation:**")
-    chat_placeholder = st.container(height=400, border=True)
+    # 1. Tìm folder faq_data
+    root_items = get_files_in_folder(root_folder_id)
+    faq_data_folder = next((item for item in root_items if item['name'] == 'faq_data'), None)
     
-    # Hiển thị các tin nhắn cũ
-    with chat_placeholder:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+    if not faq_data_folder:
+        return catalog
 
-    # Vùng nhập Question (Giống image_1.png ở dưới cùng)
-    # Dùng st.chat_input thay vì st.text_input để có UX giống ChatGPT
-    if prompt := st.chat_input("**:question: Question:**"):
-        
-        # 1. Hiển thị câu hỏi của user
-        with chat_placeholder:
-            with st.chat_message("user"):
-                st.markdown(prompt)
-        
-        # Lưu vào lịch sử
-        st.session_state.messages.append({"role": "user", "content": prompt})
-
-        # 2. Xử lý AI (Phần này sẽ kết nối với Gemini/FAISS sau)
-        with chat_placeholder:
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                full_response = ""
-                
-                # Giả lập AI đang suy nghĩ (UX)
-                with st.spinner("Đang tra cứu FAQ..."):
-                    # MÔ PHỎNG LỜI GIẢI TỪ AI DỰA TRÊN TỪ KHÓA
-                    if "nghỉ phép" in prompt.lower():
-                        simulated_response = "Theo quy định tại file PDF 'Chinh_sach_nhan_su.pdf', nhân viên có 12 ngày nghỉ phép năm..."
-                    elif "thanh toán" in prompt.lower():
-                        simulated_response = "Quy trình thanh toán được hướng dẫn trong file Word 'Quy_trinh_tai_chinh.docx', bước 1 là lập đề nghị..."
-                    else:
-                        simulated_response = "Hiện tại tôi chưa tìm thấy thông tin này trong bộ FAQ. Bạn có thể thử đặt câu hỏi khác cụ thể hơn."
+    # 2. Tìm folder ngôn ngữ (VD: vi-vn)
+    lang_folders = get_files_in_folder(faq_data_folder['id'])
+    for lang in lang_folders:
+        # 3. Tìm các folder Brand (VD: ulv-ahc)
+        brand_folders = get_files_in_folder(lang['id'])
+        for brand in brand_folders:
+            brand_name = brand['name']
+            catalog[brand_name] = []
+            
+            # 4. Lấy tất cả file Document bên trong Brand đó
+            docs = get_files_in_folder(brand['id'])
+            for doc in docs:
+                if doc['mimeType'] != 'application/vnd.google-apps.folder':
+                    catalog[brand_name].append({
+                        'file_name': doc['name'],
+                        'file_id': doc['id'],
+                        'mime_type': doc['mimeType']
+                    })
                     
-                    time.sleep(1) # Giả lập độ trễ API
+    return catalog
 
-                # Hiệu ứng gõ chữ (Streaming UX)
-                for chunk in simulated_response.split():
-                    full_response += chunk + " "
-                    time.sleep(0.05)
-                    message_placeholder.markdown(full_response + "▌")
-                message_placeholder.markdown(full_response)
-        
-        # Lưu câu trả lời của AI vào lịch sử
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+# ==========================================
+# THỰC THI THỬ NGHIỆM TRÊN GIAO DIỆN
+# ==========================================
+# THAY BẰNG ID CỦA FOLDER "CSADA-FAQ" (Lấy trên thanh địa chỉ trình duyệt)
+ROOT_FOLDER_ID = "1ZXM5TjT2PPWAtA39ofvBGiBh5owWyuq0" 
+
+st.title("Hệ thống CSADA FAQ - Testing Khung Dữ liệu")
+
+with st.spinner("Đang đồng bộ dữ liệu với Google Drive..."):
+    # Tải danh sách User
+    df_users = load_users(ROOT_FOLDER_ID)
+    st.write("### 1. Dữ liệu User Detail")
+    st.dataframe(df_users)
+    
+    # Tải cấu trúc FAQ
+    faq_catalog = build_faq_catalog(ROOT_FOLDER_ID)
+    st.write("### 2. Dữ liệu FAQ phân theo Brand")
+    st.json(faq_catalog)
+
+# (Giao diện UI có dropdown chọn Brand sẽ dùng dữ liệu từ faq_catalog này)
+if faq_catalog:
+    selected_brand = st.selectbox("Chọn Brand để tra cứu:", list(faq_catalog.keys()))
+    st.write(f"Bạn đang trực cho Brand: **{selected_brand}**")
+    st.write("Các tài liệu AI sẽ dùng để trả lời:", [f['file_name'] for f in faq_catalog[selected_brand]])
