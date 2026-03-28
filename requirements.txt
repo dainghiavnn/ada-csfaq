@@ -1,2 +1,9 @@
 streamlit
 streamlit-authenticator
+google-generativeai
+langchain
+langchain-community
+faiss-cpu
+pypdf
+python-docx
+pandas
