@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import time  # <--- Bắt buộc phải có thư viện này để ru ngủ hệ thống
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -13,25 +14,22 @@ def get_embedding_model():
         raise ValueError("Thiếu GEMINI_API_KEY trong cấu hình Secrets.")
     
     return GoogleGenerativeAIEmbeddings(
-        model="models/gemini-embedding-001",  # <--- [SỬA Ở ĐÂY] Đổi sang lõi Embedding mới nhất của năm 2026
+        model="models/gemini-embedding-001", 
         google_api_key=st.secrets["GEMINI_API_KEY"]
     )
     
 def build_vector_database(raw_documents):
     """
-    Băm nhỏ văn bản và ép vào CSDL Vector (ChromaDB)
-    raw_documents là mảng output từ file data_ingestion.py
+    Băm nhỏ văn bản và ép vào CSDL Vector theo từng Lô (Batching) để né lỗi 429
     """
     if not raw_documents:
         print("Cảnh báo: Không có tài liệu nào để Vector hóa.")
         return None
 
-    # 1. Kỹ thuật băm nhỏ có chồng lấp (Chunking with Overlap)
-    # chunk_size: Số lượng ký tự tối đa cho mỗi mảnh
-    # chunk_overlap: Số lượng ký tự vay mượn từ mảnh trước đó để giữ ngữ cảnh
+    # 1. TĂNG KÍCH THƯỚC CHUNK ĐỂ GIẢM SỐ LƯỢNG MẢNH VỠ
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
+        chunk_size=3000,   # Cắt to hơn (tăng từ 1000 lên 3000)
+        chunk_overlap=500, # Vay mượn nhiều hơn để giữ ngữ cảnh (tăng từ 200 lên 500)
         separators=["\n\n", "\n", ".", " ", ""]
     )
 
@@ -43,30 +41,52 @@ def build_vector_database(raw_documents):
         metadata = doc.get("metadata", {})
         
         if text:
-            # Tách 1 văn bản dài thành nhiều mảnh nhỏ
             split_texts = text_splitter.split_text(text)
             chunks.extend(split_texts)
-            # Nhân bản siêu dữ liệu (Metadata) cho từng mảnh tương ứng
             metadatas.extend([metadata] * len(split_texts))
 
     if not chunks:
         print("Lỗi: Không thể trích xuất đoạn văn bản nào sau khi Chunking.")
         return None
 
-    # 2. Khởi tạo Embedding Model và nạp vào ChromaDB
+    # 2. KHỞI TẠO DB VÀ BƠM DỮ LIỆU TỪ TỪ (CHIẾN THUẬT DU KÍCH)
     embeddings = get_embedding_model()
     
-    # Tạo mới hoặc ghi đè DB hiện tại
-    vector_db = Chroma.from_texts(
-        texts=chunks,
-        embedding=embeddings,
-        metadatas=metadatas,
-        persist_directory=CHROMA_PERSIST_DIR
+    # Tạo kết nối với thư mục DB rỗng
+    vector_db = Chroma(
+        persist_directory=CHROMA_PERSIST_DIR, 
+        embedding_function=embeddings
     )
     
+    BATCH_SIZE = 90  # Khóa giới hạn an toàn: Luôn gửi dưới 100 request/phút
+    total_chunks = len(chunks)
+    
+    # Báo cáo lên giao diện Streamlit cho Admin biết đang làm gì
+    progress_text = f"Chuẩn bị nạp {total_chunks} đoạn văn bản. Bắt đầu chiến thuật ru ngủ API..."
+    my_bar = st.progress(0, text=progress_text)
+
+    for i in range(0, total_chunks, BATCH_SIZE):
+        batch_texts = chunks[i:i+BATCH_SIZE]
+        batch_metadatas = metadatas[i:i+BATCH_SIZE]
+        
+        # Đẩy 1 lô 90 mảnh vào Database
+        vector_db.add_texts(texts=batch_texts, metadatas=batch_metadatas)
+        
+        # Tính toán tiến độ
+        current_chunk = min(i + BATCH_SIZE, total_chunks)
+        progress_ratio = current_chunk / total_chunks
+        
+        if current_chunk < total_chunks:
+            # Nếu chưa xong, báo UI và ngủ đông 60 giây
+            my_bar.progress(progress_ratio, text=f"Đã nạp {current_chunk}/{total_chunks} đoạn. Đang ngủ đông 60s để Google hồi Quota...")
+            time.sleep(60) 
+        else:
+            # Nếu đã xong
+            my_bar.progress(1.0, text=f"Hoàn tất nạp {total_chunks}/{total_chunks} đoạn thành công!")
+
     # Ép ChromaDB lưu dữ liệu vật lý xuống ổ cứng tạm của Streamlit
     vector_db.persist()
-    print(f"Đã Vector hóa thành công {len(chunks)} phân đoạn tài liệu.")
+    print(f"Đã Vector hóa thành công {total_chunks} phân đoạn tài liệu.")
     
     return vector_db
 
