@@ -63,9 +63,18 @@ def read_file_content(drive_service, file_id, mime_type):
             
             # ---> BẮT ĐẦU ĐOẠN MÃ MỚI THÊM VÀO ĐỂ ĐỌC EXCEL (.xlsx) <---
             elif mime_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
-                # Dùng Pandas để đọc luồng nhị phân Excel, sau đó chuyển thành dạng bảng text (CSV) cho AI dễ hiểu
-                df = pd.read_excel(file_stream)
-                return df.to_csv(index=False) 
+                # Thêm tham số sheet_name=None để ép Pandas đọc TẤT CẢ các sheet
+                excel_data = pd.read_excel(file_stream, sheet_name=None)
+                all_sheets_text = []
+                
+                # Duyệt qua từng sheet một và gom chung lại thành một bài văn bản dài
+                for sheet_name, df in excel_data.items():
+                    # Đánh dấu tên Sheet để AI phân biệt được nội dung
+                    all_sheets_text.append(f"--- Dữ liệu từ Sheet: {sheet_name} ---")
+                    # Chuyển bảng thành dạng CSV để AI dễ hiểu cấu trúc dòng/cột
+                    all_sheets_text.append(df.to_csv(index=False))
+                    
+                return "\n\n".join(all_sheets_text)
             # ---> KẾT THÚC ĐOẠN MÃ MỚI <---
                 
             elif mime_type == 'text/plain':
