@@ -145,26 +145,32 @@ try:
         st.divider()
 
         # --- KHU VỰC ĐẶC QUYỀN CỦA ADMIN ---
-        if username == "admin":
+            if username == "admin":
             with st.expander("🛠️ BẢNG ĐIỀU KHIỂN ADMIN (Quản lý Vector Database)", expanded=True):
                 st.warning("Hành động này sẽ ép hệ thống đọc lại toàn bộ file từ Drive và băm nhỏ vào DB. Cần vài phút để hoàn thành.")
+                
+                # Nút Sync Data cũ
                 if st.button("🔄 Khởi chạy Đồng bộ hóa Dữ liệu (Sync Data)"):
-                    with st.status("Đang xây dựng lại não bộ RAG...", expanded=True) as status:
-                        st.write("1. Đang quét cây thư mục Google Drive và bóc tách văn bản thô...")
-                        raw_docs = ingest_all_documents(ROOT_FOLDER_ID)
-                        st.write(f">> Đã trích xuất thành công {len(raw_docs)} tài liệu.")
-                        
-                        st.write("2. Đang băm nhỏ (Chunking) và Nhúng (Embedding) vào ChromaDB...")
-                        db = build_vector_database(raw_docs)
-                        
-                        if db:
-                            status.update(label="Hoàn tất đồng bộ!", state="complete", expanded=False)
-                            st.success("Hệ thống RAG đã được cập nhật thành công. AI đã sẵn sàng phục vụ.")
-                        else:
-                            status.update(label="Đồng bộ thất bại", state="error", expanded=True)
-                            st.error("Không có dữ liệu hợp lệ để đẩy vào Database.")
-            st.divider()
+                    # ... (giữ nguyên code cũ của nút này) ...
+                    pass 
 
+                st.divider()
+                
+                # [MỚI] NÚT CHẨN ĐOÁN LỖI 404
+                st.info("Công cụ gỡ lỗi API: Quét danh sách Model khả dụng cho API Key của ADA")
+                if st.button("🔍 Quét danh sách Model Google"):
+                    import google.generativeai as genai
+                    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+                    
+                    st.write("**Đây là những Model thực sự tồn tại và khả dụng cho API Key của bạn:**")
+                    try:
+                        models = genai.list_models()
+                        for m in models:
+                            if 'generateContent' in m.supported_generation_methods:
+                                st.code(m.name.replace("models/", "")) # Cắt bỏ chữ models/ để lấy tên chuẩn
+                    except Exception as e:
+                        st.error(f"Lỗi khi quét API: {e}")
+            st.divider()
         # --- KHU VỰC LÀM VIỆC CỦA CHUYÊN VIÊN CS ---
         with st.spinner("Đang tải danh mục Brand..."):
             ui_filters = build_ui_filters(ROOT_FOLDER_ID)
