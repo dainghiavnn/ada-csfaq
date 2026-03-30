@@ -30,18 +30,20 @@ except Exception as e:
 # --- 2. ĐỌC DỮ LIỆU NHÂN SỰ TỪ GOOGLE SHEET CHỈ ĐỊNH ---
 @st.cache_data(ttl=600)
 def load_users():
-    # Sử dụng trực tiếp ID từ link Google Sheet gốc của dự án
     SHEET_FILE_ID = '1M56bpLkqjj56Qj1VTKrgnXIOpQ8HgzimTx-1Ge4OBk4'
     try:
+        # [THAY ĐỔI 1] Yêu cầu Google xuất dữ liệu dưới dạng CSV siêu nhẹ thay vì Excel
         request = drive_service.files().export_media(
             fileId=SHEET_FILE_ID,
-            mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            mimeType='text/csv'
         )
         file_stream = io.BytesIO(request.execute())
-        df = pd.read_excel(file_stream)
+        
+        # [THAY ĐỔI 2] Dùng Pandas đọc file CSV thay vì đọc file Excel
+        df = pd.read_csv(file_stream)
         return df
     except Exception as e:
-        st.error(f"Lỗi đọc Google Sheet CSADA-UserDetail: {e}")
+        st.error(f"Lỗi kết nối mạng khi đọc Google Sheet: {e}")
         return pd.DataFrame()
 
 # --- 3. BĂM MẬT KHẨU VÀ TẠO BỘ TỪ ĐIỂN CREDENTIALS ---
