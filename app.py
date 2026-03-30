@@ -145,7 +145,7 @@ try:
         st.divider()
 
         # --- KHU VỰC ĐẶC QUYỀN CỦA ADMIN ---
-            if username == "admin":
+if username == "admin":
             with st.expander("🛠️ BẢNG ĐIỀU KHIỂN ADMIN (Quản lý Vector Database)", expanded=True):
                 st.warning("Hành động này sẽ ép hệ thống đọc lại toàn bộ file từ Drive và băm nhỏ vào DB. Cần vài phút để hoàn thành.")
                 
