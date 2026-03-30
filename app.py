@@ -177,8 +177,6 @@ try:
                         except Exception as e:
                             status.update(label="Hệ thống sập ngầm trong lúc chạy", state="error", expanded=True)
                             st.error(f"Lỗi kỹ thuật: {e}")
-                    pass 
-
                 st.divider()
                 
                 # [MỚI] NÚT CHẨN ĐOÁN LỖI 404
