@@ -144,57 +144,7 @@ try:
             
         st.divider()
 
-        # --- KHU VỰC ĐẶC QUYỀN CỦA ADMIN ---
-        if username == "admin":
-            with st.expander("🛠️ BẢNG ĐIỀU KHIỂN ADMIN (Quản lý Vector Database)", expanded=True):
-                st.warning("Hành động này sẽ ép hệ thống đọc lại toàn bộ file từ Drive và băm nhỏ vào DB. Cần vài phút để hoàn thành.")
-                
-                # Nút Sync Data cũ
-               if st.button("🔄 Khởi chạy Đồng bộ hóa Dữ liệu (Sync Data)", type="primary"):
-                    st.toast("Đã nhận lệnh! Bắt đầu kết nối Drive...", icon="🚀") # Hiển thị thông báo nổi ngay lập tức
-                    
-                    with st.status("Đang xây dựng lại não bộ RAG...", expanded=True) as status:
-                        try:
-                            st.write("1. Đang quét cây thư mục Google Drive...")
-                            raw_docs = ingest_all_documents(ROOT_FOLDER_ID)
-                            
-                            if not raw_docs:
-                                status.update(label="Đồng bộ thất bại: 0 tài liệu được tìm thấy!", state="error", expanded=True)
-                                st.error("🚨 NGUYÊN NHÂN LỖI: API chạy thành công nhưng Drive trống rỗng.")
-                                st.warning("Cách xử lý:\n1. Kiểm tra lại xem bạn đã cấp quyền Viewer cho email Service Account vào folder chưa?\n2. Đảm bảo bên trong folder gốc có một thư mục con tên chính xác là `faq_data` (chữ thường).")
-                            else:
-                                st.write(f">> Đã trích xuất thành công {len(raw_docs)} tài liệu.")
-                                st.write("2. Đang băm nhỏ (Chunking) và Nhúng (Embedding) vào ChromaDB...")
-                                
-                                db = build_vector_database(raw_docs)
-                                
-                                if db:
-                                    status.update(label="Hoàn tất đồng bộ!", state="complete", expanded=False)
-                                    st.success("Hệ thống RAG đã cập nhật thành công. AI đã sẵn sàng!")
-                                else:
-                                    status.update(label="Lỗi ở khâu băm dữ liệu", state="error", expanded=True)
-                                    st.error("Có tài liệu nhưng hệ thống ChromaDB không thể mã hóa được. Vui lòng kiểm tra Logs.")
-                        except Exception as e:
-                            status.update(label="Hệ thống sập ngầm trong lúc chạy", state="error", expanded=True)
-                            st.error(f"Lỗi kỹ thuật: {e}")
-                st.divider()
-                
-                # [MỚI] NÚT CHẨN ĐOÁN LỖI 404
-                st.info("Công cụ gỡ lỗi API: Quét danh sách Model khả dụng cho API Key của ADA")
-                if st.button("🔍 Quét danh sách Model Google"):
-                    import google.generativeai as genai
-                    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-                    
-                    st.write("**Đây là những Model thực sự tồn tại và khả dụng cho API Key của bạn:**")
-                    try:
-                        models = genai.list_models()
-                        for m in models:
-                            if 'generateContent' in m.supported_generation_methods:
-                                st.code(m.name.replace("models/", "")) # Cắt bỏ chữ models/ để lấy tên chuẩn
-                    except Exception as e:
-                        st.error(f"Lỗi khi quét API: {e}")
-            st.divider()
-            
+       
         # --- KHU VỰC LÀM VIỆC CỦA CHUYÊN VIÊN CS ---
         with st.spinner("Đang tải danh mục Brand..."):
             ui_filters = build_ui_filters(ROOT_FOLDER_ID)
