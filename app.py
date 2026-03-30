@@ -27,9 +27,10 @@ except Exception as e:
     st.error(f"Lỗi khởi tạo Drive API: {e}")
     st.stop()
 
+# --- 2. ĐỌC DỮ LIỆU NHÂN SỰ TỪ GOOGLE SHEET CHỈ ĐỊNH ---
 @st.cache_data(ttl=600)
 def load_users():
-    # Sử dụng trực tiếp ID từ link Google Sheet của bạn để không bao giờ bị trượt
+    # Sử dụng trực tiếp ID từ link Google Sheet gốc của dự án
     SHEET_FILE_ID = '1M56bpLkqjj56Qj1VTKrgnXIOpQ8HgzimTx-1Ge4OBk4'
     try:
         request = drive_service.files().export_media(
@@ -40,12 +41,15 @@ def load_users():
         df = pd.read_excel(file_stream)
         return df
     except Exception as e:
-        print(f"Lỗi đọc Google Sheet CSADA-UserDetail: {e}")
-        return pd.DataFrame() # Trả về bảng rỗng nếu lỗi để không sập app
+        st.error(f"Lỗi đọc Google Sheet CSADA-UserDetail: {e}")
+        return pd.DataFrame()
 
+# --- 3. BĂM MẬT KHẨU VÀ TẠO BỘ TỪ ĐIỂN CREDENTIALS ---
 @st.cache_data(ttl=600)
 def prepare_credentials(_df_users):
     creds = {"usernames": {}}
+    
+    # Duyệt file excel, chỉ lấy những người có trạng thái ACTIVE
     if isinstance(_df_users, pd.DataFrame) and not _df_users.empty:
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
         for i, (_, row) in enumerate(active_users.iterrows()):
@@ -65,7 +69,7 @@ def prepare_credentials(_df_users):
                 "failed_login_attempts": 0
             }
             
-    # Thêm tài khoản Admin để quản trị Vector DB
+    # Thêm tài khoản Admin để quản trị hệ thống
     admin_username = "admin"
     admin_plain_pass = "ADA@Vn"
     admin_hashed_pass = bcrypt.hashpw(admin_plain_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -78,9 +82,10 @@ def prepare_credentials(_df_users):
     }
     return creds
 
+# --- 4. TẠO BỘ LỌC TÌM KIẾM TRÊN GIAO DIỆN CS ---
 @st.cache_data(ttl=3600)
 def build_ui_filters(root_folder_id):
-    """Quét thư mục nhanh để lấy danh sách Client/Region lên Dropdown (Không đọc ruột file)"""
+    """Quét thư mục nhanh để lấy danh sách Client/Region lên Dropdown"""
     catalog = {} 
     root_items = get_files_in_folder(drive_service, root_folder_id)
     if not isinstance(root_items, list): return catalog
@@ -112,7 +117,7 @@ ROOT_FOLDER_ID = "1ZXM5TjT2PPWAtA39ofvBGiBh5owWyuq0"
 
 try:
     with st.spinner("Đang khởi tạo hệ thống bảo mật..."):
-        df_users = load_users(ROOT_FOLDER_ID)
+        df_users = load_users() # Cập nhật hàm gọi không cần biến
         credentials = prepare_credentials(df_users)
         
     authenticator = stauth.Authenticate(
@@ -144,43 +149,60 @@ try:
             
         st.divider()
 
-       
         # --- KHU VỰC ĐẶC QUYỀN CỦA ADMIN ---
         if username == "admin":
             st.success("🔐 Bạn đang truy cập với quyền Quản trị viên cao nhất.")
             
-            # Chia Bảng điều khiển thành 2 Tabs
             tab_db, tab_users = st.tabs(["🧠 Quản lý Trí nhớ AI (Vector DB)", "👥 Quản lý Nhân sự (CSADA-UserDetail)"])
             
             with tab_db:
                 st.warning("Hành động này sẽ ép hệ thống đọc lại toàn bộ file từ Drive và băm nhỏ vào DB. Cần vài phút để hoàn thành.")
+                
                 if st.button("🔄 Khởi chạy Đồng bộ hóa Dữ liệu (Sync Data)", type="primary"):
                     st.toast("Đã nhận lệnh! Bắt đầu kết nối Drive...", icon="🚀")
+                    
                     with st.status("Đang xây dựng lại não bộ RAG...", expanded=True) as status:
                         try:
                             st.write("1. Đang quét cây thư mục Google Drive...")
                             raw_docs = ingest_all_documents(ROOT_FOLDER_ID)
+                            
                             if not raw_docs:
-                                status.update(label="Đồng bộ thất bại: 0 tài liệu", state="error", expanded=True)
-                                st.error("Lỗi: Không tìm thấy tài liệu trong Drive.")
+                                status.update(label="Đồng bộ thất bại: 0 tài liệu được tìm thấy!", state="error", expanded=True)
+                                st.error("🚨 NGUYÊN NHÂN LỖI: API chạy thành công nhưng Drive trống rỗng.")
                             else:
-                                st.write(f">> Đã trích xuất {len(raw_docs)} tài liệu.")
-                                st.write("2. Đang băm nhỏ và Nhúng vào ChromaDB...")
+                                st.write(f">> Đã trích xuất thành công {len(raw_docs)} tài liệu.")
+                                st.write("2. Đang băm nhỏ (Chunking) và Nhúng (Embedding) vào ChromaDB...")
+                                
                                 db = build_vector_database(raw_docs)
+                                
                                 if db:
                                     status.update(label="Hoàn tất đồng bộ!", state="complete", expanded=False)
-                                    st.success("Hệ thống RAG đã cập nhật thành công!")
+                                    st.success("Hệ thống RAG đã cập nhật thành công. AI đã sẵn sàng!")
                                 else:
-                                    status.update(label="Lỗi băm dữ liệu", state="error", expanded=True)
+                                    status.update(label="Lỗi ở khâu băm dữ liệu", state="error", expanded=True)
+                                    st.error("Có tài liệu nhưng hệ thống ChromaDB không thể mã hóa được.")
                         except Exception as e:
-                            status.update(label="Hệ thống sập ngầm", state="error", expanded=True)
+                            status.update(label="Hệ thống sập ngầm trong lúc chạy", state="error", expanded=True)
                             st.error(f"Lỗi kỹ thuật: {e}")
-                            
+                
+                st.divider()
+                st.info("Công cụ gỡ lỗi API: Quét danh sách Model khả dụng cho API Key của ADA")
+                if st.button("🔍 Quét danh sách Model Google"):
+                    import google.generativeai as genai
+                    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+                    st.write("**Đây là những Model thực sự tồn tại và khả dụng cho API Key của bạn:**")
+                    try:
+                        models = genai.list_models()
+                        for m in models:
+                            if 'generateContent' in m.supported_generation_methods:
+                                st.code(m.name.replace("models/", ""))
+                    except Exception as e:
+                        st.error(f"Lỗi khi quét API: {e}")
+                        
             with tab_users:
                 st.write("Dữ liệu được trích xuất trực tiếp (Real-time) từ Google Sheet:")
                 st.markdown("[🔗 Mở Google Sheet Gốc để chỉnh sửa](https://docs.google.com/spreadsheets/d/1M56bpLkqjj56Qj1VTKrgnXIOpQ8HgzimTx-1Ge4OBk4/edit)", unsafe_allow_html=True)
                 
-                # Hiển thị bảng df_users ra màn hình
                 if not df_users.empty:
                     st.dataframe(df_users, use_container_width=True)
                 else:
@@ -189,7 +211,8 @@ try:
                 st.info("💡 Lưu ý: Hệ thống chỉ cấp quyền đăng nhập cho những User có trạng thái `ACTIVE` ở cột `AGENT_STATUS`. Sau khi sửa trên Google Sheet, hãy đợi 10 phút hoặc Reboot App để hệ thống nhận mật khẩu mới.")
             
             st.divider()
-# --- KHU VỰC LÀM VIỆC CỦA CHUYÊN VIÊN CS ---
+
+        # --- KHU VỰC LÀM VIỆC CỦA CHUYÊN VIÊN CS ---
         with st.spinner("Đang tải danh mục Brand..."):
             ui_filters = build_ui_filters(ROOT_FOLDER_ID)
             
