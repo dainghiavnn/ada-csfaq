@@ -40,7 +40,7 @@ def generate_rag_response(query, client_name, region):
             return "Cảnh báo an ninh: Không tìm thấy khóa giao tiếp GEMINI_API_KEY."
             
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
         You are a strict and precise Customer Service (CS) Assistant for ADA.
