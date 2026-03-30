@@ -13,10 +13,10 @@ def get_embedding_model():
         raise ValueError("Thiếu GEMINI_API_KEY trong cấu hình Secrets.")
     
     return GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",  # <--- [SỬA TẠI ĐÂY] Nâng cấp lên lõi Embedding thế hệ 4
-        google_api_key = st.secrets["GEMINI_API_KEY"]
+        model="models/gemini-embedding-001",  # <--- [SỬA Ở ĐÂY] Đổi sang lõi Embedding mới nhất của năm 2026
+        google_api_key=st.secrets["GEMINI_API_KEY"]
     )
-
+    
 def build_vector_database(raw_documents):
     """
     Băm nhỏ văn bản và ép vào CSDL Vector (ChromaDB)
