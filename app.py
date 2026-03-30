@@ -145,7 +145,51 @@ try:
         st.divider()
 
        
-        # --- KHU VỰC LÀM VIỆC CỦA CHUYÊN VIÊN CS ---
+        # --- KHU VỰC ĐẶC QUYỀN CỦA ADMIN ---
+        if username == "admin":
+            st.success("🔐 Bạn đang truy cập với quyền Quản trị viên cao nhất.")
+            
+            # Chia Bảng điều khiển thành 2 Tabs
+            tab_db, tab_users = st.tabs(["🧠 Quản lý Trí nhớ AI (Vector DB)", "👥 Quản lý Nhân sự (CSADA-UserDetail)"])
+            
+            with tab_db:
+                st.warning("Hành động này sẽ ép hệ thống đọc lại toàn bộ file từ Drive và băm nhỏ vào DB. Cần vài phút để hoàn thành.")
+                if st.button("🔄 Khởi chạy Đồng bộ hóa Dữ liệu (Sync Data)", type="primary"):
+                    st.toast("Đã nhận lệnh! Bắt đầu kết nối Drive...", icon="🚀")
+                    with st.status("Đang xây dựng lại não bộ RAG...", expanded=True) as status:
+                        try:
+                            st.write("1. Đang quét cây thư mục Google Drive...")
+                            raw_docs = ingest_all_documents(ROOT_FOLDER_ID)
+                            if not raw_docs:
+                                status.update(label="Đồng bộ thất bại: 0 tài liệu", state="error", expanded=True)
+                                st.error("Lỗi: Không tìm thấy tài liệu trong Drive.")
+                            else:
+                                st.write(f">> Đã trích xuất {len(raw_docs)} tài liệu.")
+                                st.write("2. Đang băm nhỏ và Nhúng vào ChromaDB...")
+                                db = build_vector_database(raw_docs)
+                                if db:
+                                    status.update(label="Hoàn tất đồng bộ!", state="complete", expanded=False)
+                                    st.success("Hệ thống RAG đã cập nhật thành công!")
+                                else:
+                                    status.update(label="Lỗi băm dữ liệu", state="error", expanded=True)
+                        except Exception as e:
+                            status.update(label="Hệ thống sập ngầm", state="error", expanded=True)
+                            st.error(f"Lỗi kỹ thuật: {e}")
+                            
+            with tab_users:
+                st.write("Dữ liệu được trích xuất trực tiếp (Real-time) từ Google Sheet:")
+                st.markdown("[🔗 Mở Google Sheet Gốc để chỉnh sửa](https://docs.google.com/spreadsheets/d/1M56bpLkqjj56Qj1VTKrgnXIOpQ8HgzimTx-1Ge4OBk4/edit)", unsafe_allow_html=True)
+                
+                # Hiển thị bảng df_users ra màn hình
+                if not df_users.empty:
+                    st.dataframe(df_users, use_container_width=True)
+                else:
+                    st.error("🚨 Không thể tải dữ liệu nhân sự! Hãy kiểm tra xem bạn đã Share quyền cho Service Account vào file Google Sheet chưa?")
+                
+                st.info("💡 Lưu ý: Hệ thống chỉ cấp quyền đăng nhập cho những User có trạng thái `ACTIVE` ở cột `AGENT_STATUS`. Sau khi sửa trên Google Sheet, hãy đợi 10 phút hoặc Reboot App để hệ thống nhận mật khẩu mới.")
+            
+            st.divider()
+# --- KHU VỰC LÀM VIỆC CỦA CHUYÊN VIÊN CS ---
         with st.spinner("Đang tải danh mục Brand..."):
             ui_filters = build_ui_filters(ROOT_FOLDER_ID)
             
