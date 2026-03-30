@@ -14,7 +14,7 @@ def get_embedding_model():
     
     return GoogleGenerativeAIEmbeddings(
         model="models/text-embedding-004",  # <--- [SỬA TẠI ĐÂY] Nâng cấp lên lõi Embedding thế hệ 4
-        google_api_key=st.secrets["AIzaSyBhYIqcwB1yGHHDuWAtL8NfJjXuHMC_mIw"]
+        google_api_key = st.secrets["GEMINI_API_KEY"]
     )
 
 def build_vector_database(raw_documents):
