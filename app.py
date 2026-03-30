@@ -28,20 +28,20 @@ except Exception as e:
     st.stop()
 
 @st.cache_data(ttl=600)
-def load_users(root_folder_id):
-    items = get_files_in_folder(drive_service, root_folder_id)
-    if isinstance(items, list):
-        for item in items:
-            if isinstance(item, dict) and item.get('name') == 'CSADA-UserDetail':
-                file_id = item.get('id')
-                if file_id:
-                    request = drive_service.files().export_media(
-                        fileId=file_id,
-                        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                    )
-                    file_stream = io.BytesIO(request.execute())
-                    return pd.read_excel(file_stream)
-    return pd.DataFrame()
+def load_users():
+    # Sử dụng trực tiếp ID từ link Google Sheet của bạn để không bao giờ bị trượt
+    SHEET_FILE_ID = '1M56bpLkqjj56Qj1VTKrgnXIOpQ8HgzimTx-1Ge4OBk4'
+    try:
+        request = drive_service.files().export_media(
+            fileId=SHEET_FILE_ID,
+            mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        file_stream = io.BytesIO(request.execute())
+        df = pd.read_excel(file_stream)
+        return df
+    except Exception as e:
+        print(f"Lỗi đọc Google Sheet CSADA-UserDetail: {e}")
+        return pd.DataFrame() # Trả về bảng rỗng nếu lỗi để không sập app
 
 @st.cache_data(ttl=600)
 def prepare_credentials(_df_users):
