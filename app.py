@@ -1,78 +1,35 @@
 import streamlit as st
 import pandas as pd
 import io
-import time
 import json
 import traceback
 import bcrypt
-import PyPDF2
-import docx
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import streamlit_authenticator as stauth
-import google.generativeai as genai
+
+# --- IMPORT MODULES RAG ĐÃ TÁCH RỜI ---
+from data_ingestion import ingest_all_documents, get_drive_service, get_files_in_folder
+from vector_engine import build_vector_database
+from rag_generator import generate_rag_response
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="CSADA FAQ System", page_icon="🏢", layout="wide")
 
-# --- 1. BULLETPROOF DRIVE & GEMINI API CONNECTION ---
+# --- 1. KẾT NỐI DRIVE & ỦY QUYỀN ---
 @st.cache_resource
-def get_drive_service():
-    raw_creds = st.secrets["gcp_service_account"]
-    
-    creds_info = {}
-    if isinstance(raw_creds, str):
-        try:
-            creds_info = json.loads(raw_creds)
-        except Exception:
-            pass
-    elif hasattr(raw_creds, "to_dict"):
-        creds_info = raw_creds.to_dict()
-    elif isinstance(raw_creds, list) and len(raw_creds) > 0:
-        if isinstance(raw_creds[0], dict):
-            creds_info = raw_creds[0]
-        elif hasattr(raw_creds[0], "to_dict"):
-            creds_info = raw_creds[0].to_dict()
-    elif isinstance(raw_creds, dict):
-        creds_info = raw_creds
-
-    if not creds_info:
-        raise ValueError("Cannot parse Google Service Account credentials from secrets.")
-
-    creds_dict = {str(k): str(v) for k, v in creds_info.items()}
-    creds = service_account.Credentials.from_service_account_info(creds_dict)
-    return build('drive', 'v3', credentials=creds)
+def init_drive():
+    return get_drive_service()
 
 try:
-    drive_service = get_drive_service()
+    drive_service = init_drive()
 except Exception as e:
     st.error(f"Lỗi khởi tạo Drive API: {e}")
     st.stop()
 
-if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
-# --- 2. DEFENSIVE RECURSIVE FOLDER SCANNING ---
-def get_files_in_folder(folder_id):
-    if not folder_id or not isinstance(folder_id, str):
-        return []
-    try:
-        query = f"'{folder_id}' in parents and trashed=false"
-        results = drive_service.files().list(
-            q=query, 
-            fields="files(id, name, mimeType)"
-        ).execute()
-        
-        if isinstance(results, dict):
-            return results.get('files', [])
-        return []
-    except Exception:
-        return []
-
-# --- 3. READ USER DETAIL FILE ---
 @st.cache_data(ttl=600)
 def load_users(root_folder_id):
-    items = get_files_in_folder(root_folder_id)
+    items = get_files_in_folder(drive_service, root_folder_id)
     if isinstance(items, list):
         for item in items:
             if isinstance(item, dict) and item.get('name') == 'CSADA-UserDetail':
@@ -86,14 +43,11 @@ def load_users(root_folder_id):
                     return pd.read_excel(file_stream)
     return pd.DataFrame()
 
-# --- OPTIMIZED CREDENTIALS ---
 @st.cache_data(ttl=600)
 def prepare_credentials(_df_users):
     creds = {"usernames": {}}
-    
     if isinstance(_df_users, pd.DataFrame) and not _df_users.empty:
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
-        
         for i, (_, row) in enumerate(active_users.iterrows()):
             email = str(row['MAIL']).strip()
             plain_pass = str(row['Password']).strip()
@@ -111,10 +65,10 @@ def prepare_credentials(_df_users):
                 "failed_login_attempts": 0
             }
             
+    # Thêm tài khoản Admin để quản trị Vector DB
     admin_username = "admin"
     admin_plain_pass = "ADA@Vn"
     admin_hashed_pass = bcrypt.hashpw(admin_plain_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    
     creds["usernames"][admin_username] = {
         "email": admin_username,
         "name": "System Administrator",
@@ -122,132 +76,34 @@ def prepare_credentials(_df_users):
         "logged_in": False,
         "failed_login_attempts": 0
     }
-            
     return creds
 
-# --- 4. SCAN AND CATEGORIZE FAQ DATA ---
 @st.cache_data(ttl=3600)
-def build_faq_catalog(root_folder_id):
+def build_ui_filters(root_folder_id):
+    """Quét thư mục nhanh để lấy danh sách Client/Region lên Dropdown (Không đọc ruột file)"""
     catalog = {} 
-    root_items = get_files_in_folder(root_folder_id)
+    root_items = get_files_in_folder(drive_service, root_folder_id)
     if not isinstance(root_items, list): return catalog
     
     faq_data_folder = next((item for item in root_items if isinstance(item, dict) and item.get('name') == 'faq_data'), None)
     if not faq_data_folder: return catalog
 
-    lang_folders = get_files_in_folder(faq_data_folder.get('id'))
+    lang_folders = get_files_in_folder(drive_service, faq_data_folder.get('id'))
     if isinstance(lang_folders, list):
         for lang in lang_folders:
             if not isinstance(lang, dict): continue
             lang_name = lang.get('name')
             if not lang_name: continue
-            catalog[lang_name] = {}
+            catalog[lang_name] = []
             
-            brand_folders = get_files_in_folder(lang.get('id'))
+            brand_folders = get_files_in_folder(drive_service, lang.get('id'))
             if isinstance(brand_folders, list):
                 for brand in brand_folders:
                     if not isinstance(brand, dict): continue
                     brand_name = brand.get('name')
-                    if not brand_name: continue
-                    catalog[lang_name][brand_name] = []
-                    
-                    docs = get_files_in_folder(brand.get('id'))
-                    if isinstance(docs, list):
-                        for doc in docs:
-                            if isinstance(doc, dict) and doc.get('mimeType') != 'application/vnd.google-apps.folder':
-                                catalog[lang_name][brand_name].append({
-                                    'file_name': doc.get('name'),
-                                    'file_id': doc.get('id'),
-                                    'mime_type': doc.get('mimeType')
-                                })
+                    if brand_name:
+                        catalog[lang_name].append(brand_name)
     return catalog
-
-# --- 5. HÀM MỚI: BÓC TÁCH NỘI DUNG TÀI LIỆU VẬT LÝ ---
-def read_file_content(file_id, mime_type):
-    try:
-        if mime_type == 'application/vnd.google-apps.document':
-            request = drive_service.files().export_media(fileId=file_id, mimeType='text/plain')
-            return request.execute().decode('utf-8')
-            
-        elif mime_type == 'application/vnd.google-apps.spreadsheet':
-            request = drive_service.files().export_media(fileId=file_id, mimeType='text/csv')
-            return request.execute().decode('utf-8')
-            
-        else:
-            request = drive_service.files().get_media(fileId=file_id)
-            file_stream = io.BytesIO(request.execute())
-            
-            if mime_type == 'application/pdf':
-                reader = PyPDF2.PdfReader(file_stream)
-                text = ""
-                for page in reader.pages:
-                    extracted = page.extract_text()
-                    if extracted:
-                        text += extracted + "\n"
-                return text
-                
-            elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-                doc = docx.Document(file_stream)
-                return "\n".join([paragraph.text for paragraph in doc.paragraphs])
-                
-            elif mime_type == 'text/plain':
-                return file_stream.read().decode('utf-8')
-                
-            else:
-                return f"[Hệ thống chưa hỗ trợ trích xuất văn bản từ định dạng MIME: {mime_type}]"
-                
-    except Exception as e:
-        return f"[Xảy ra lỗi trong quá trình phân tích nhị phân: {e}]"
-
-# --- 5.1 DATA EXTRACTION FOR AI CONTEXT (NÂNG CẤP ĐỌC SÂU) ---
-def extract_document_context(catalog, selected_lang, selected_client):
-    context = ""
-    if isinstance(catalog, dict) and selected_lang in catalog:
-        lang_dict = catalog.get(selected_lang, {})
-        if isinstance(lang_dict, dict) and selected_client in lang_dict:
-            files = lang_dict.get(selected_client, [])
-            if isinstance(files, list):
-                context += f"--- NGUỒN TÀI LIỆU {str(selected_client).upper()} ({str(selected_lang).upper()}) ---\n"
-                for f in files:
-                    if isinstance(f, dict):
-                        file_name = f.get('file_name', 'Unknown Document')
-                        file_id = f.get('file_id')
-                        mime_type = f.get('mime_type')
-                        
-                        context += f"\n>> Tài liệu: {file_name}\n"
-                        if file_id and mime_type:
-                            file_content = read_file_content(file_id, mime_type)
-                            context += f"--- NỘI DUNG ---\n{file_content}\n"
-                        else:
-                            context += "[Lỗi cấu trúc siêu dữ liệu, không thể tải file]\n"
-                            
-    if not context.strip():
-        context = "No specific documents found for this selection."
-    return context
-
-# --- 6. GEMINI 1.5 FLASH ENGINE ---
-def generate_gemini_response(query, context, client_name, region):
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        prompt = f"""
-        You are a strict and precise Customer Service (CS) Assistant for ADA.
-        Your task is to answer inquiries regarding the Client: {client_name} in Region: {region}.
-        
-        STRICT RULES:
-        1. YOU MUST BASE YOUR ANSWER ONLY ON THE "CONTEXT BOX" BELOW.
-        2. If the context box does not contain the answer, reply strictly: "Information not found in the current {client_name} FAQ repository."
-        3. Do not assume, hallucinate, or bring outside knowledge.
-        
-        [CONTEXT BOX START]
-        {context}
-        [CONTEXT BOX END]
-        
-        Agent Query: {query}
-        """
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"AI Engine Error: {e}"
 
 # ==========================================
 # MAIN INTERFACE & LOGIN FLOW
@@ -255,7 +111,7 @@ def generate_gemini_response(query, context, client_name, region):
 ROOT_FOLDER_ID = "1ZXM5TjT2PPWAtA39ofvBGiBh5owWyuq0"
 
 try:
-    with st.spinner("Syncing authorization system..."):
+    with st.spinner("Đang khởi tạo hệ thống bảo mật..."):
         df_users = load_users(ROOT_FOLDER_ID)
         credentials = prepare_credentials(df_users)
         
@@ -275,44 +131,63 @@ try:
     username = st.session_state.get("username")
 
     if authentication_status == False:
-        st.error('❌ Incorrect Email or Password. Please try again.')
+        st.error('❌ Sai Email hoặc Mật khẩu.')
     elif authentication_status == None:
-        st.info('ℹ️ Please enter your internal account credentials.')
+        st.info('ℹ️ Vui lòng đăng nhập để truy cập dữ liệu SLA.')
     elif authentication_status:
-        # ==========================================
-        # INTERACT WINDOW
-        # ==========================================
+        # --- GIAO DIỆN CHUNG ---
         col_welcome, col_logout = st.columns([5, 1])
         with col_welcome:
             st.markdown(f"**Welcome {name}**")
         with col_logout:
-            authenticator.logout('Logout', 'main')
+            authenticator.logout('Đăng xuất', 'main')
             
         st.divider()
-        
-        with st.spinner("Đang đồng bộ hóa kho dữ liệu FAQ..."):
-            faq_catalog = build_faq_catalog(ROOT_FOLDER_ID)
+
+        # --- KHU VỰC ĐẶC QUYỀN CỦA ADMIN ---
+        if username == "admin":
+            with st.expander("🛠️ BẢNG ĐIỀU KHIỂN ADMIN (Quản lý Vector Database)", expanded=True):
+                st.warning("Hành động này sẽ ép hệ thống đọc lại toàn bộ file từ Drive và băm nhỏ vào DB. Cần vài phút để hoàn thành.")
+                if st.button("🔄 Khởi chạy Đồng bộ hóa Dữ liệu (Sync Data)"):
+                    with st.status("Đang xây dựng lại não bộ RAG...", expanded=True) as status:
+                        st.write("1. Đang quét cây thư mục Google Drive và bóc tách văn bản thô...")
+                        raw_docs = ingest_all_documents(ROOT_FOLDER_ID)
+                        st.write(f">> Đã trích xuất thành công {len(raw_docs)} tài liệu.")
+                        
+                        st.write("2. Đang băm nhỏ (Chunking) và Nhúng (Embedding) vào ChromaDB...")
+                        db = build_vector_database(raw_docs)
+                        
+                        if db:
+                            status.update(label="Hoàn tất đồng bộ!", state="complete", expanded=False)
+                            st.success("Hệ thống RAG đã được cập nhật thành công. AI đã sẵn sàng phục vụ.")
+                        else:
+                            status.update(label="Đồng bộ thất bại", state="error", expanded=True)
+                            st.error("Không có dữ liệu hợp lệ để đẩy vào Database.")
+            st.divider()
+
+        # --- KHU VỰC LÀM VIỆC CỦA CHUYÊN VIÊN CS ---
+        with st.spinner("Đang tải danh mục Brand..."):
+            ui_filters = build_ui_filters(ROOT_FOLDER_ID)
             
-        if not faq_catalog or not isinstance(faq_catalog, dict):
-            st.warning("Hệ thống không tìm thấy dữ liệu FAQ hợp lệ trong máy chủ.")
+        if not ui_filters:
+            st.warning("Không tìm thấy cấu trúc thư mục trên Drive.")
         else:
-            available_languages = list(faq_catalog.keys())
+            available_languages = list(ui_filters.keys())
             
             with st.sidebar:
-                st.write("### Settings")
-                selected_lang = st.selectbox("Language / Region", available_languages)
+                st.write("### Cấu hình Khách hàng")
+                selected_lang = st.selectbox("Thị trường (Region)", available_languages)
                 
-            st.write("**:speech_balloon: Conversation:**")
-            chat_container = st.container(height=400, border=True)
+            st.write("**:speech_balloon: Trợ lý AI Phân tích Luật lệ & FAQ:**")
+            chat_container = st.container(height=450, border=True)
             
-            lang_dict = faq_catalog.get(selected_lang, {}) if isinstance(faq_catalog, dict) else {}
-            available_brands = list(lang_dict.keys()) if isinstance(lang_dict, dict) else []
+            available_brands = ui_filters.get(selected_lang, [])
             
             col_client, col_brand = st.columns(2)
             with col_client:
-                selected_client = st.selectbox("Client", available_brands)
+                selected_client = st.selectbox("Thương hiệu (Client)", available_brands)
             with col_brand:
-                st.selectbox("Store", ["All Stores"]) 
+                st.selectbox("Cửa hàng (Store)", ["Tất cả Store"]) 
             
             if 'messages' not in st.session_state:
                 st.session_state.messages = []
@@ -324,7 +199,7 @@ try:
                     with st.chat_message(message.get("role", "unknown")):
                         st.markdown(message.get("content", ""))
 
-            if prompt := st.chat_input("Enter your FAQ query here..."):
+            if prompt := st.chat_input("Nhập câu hỏi của khách hàng (VD: Kem vón cục đổi trả thế nào?)..."):
                 with chat_container:
                     with st.chat_message("user"):
                         st.markdown(prompt)
@@ -333,21 +208,16 @@ try:
                 with chat_container:
                     with st.chat_message("assistant"):
                         message_placeholder = st.empty()
-                        message_placeholder.markdown(f"Đang bóc tách dữ liệu vật lý của **{selected_client}**... Khối lượng công việc này có thể tiêu tốn vài giây ⏳")
+                        message_placeholder.markdown(f"Đang lục soát Vector Database cho **{selected_client}**... ⏳")
                         
-                        document_context = extract_document_context(faq_catalog, selected_lang, selected_client)
-                        
-                        if "GEMINI_API_KEY" not in st.secrets:
-                            response_text = "Cảnh báo an ninh: Không tìm thấy khóa giao tiếp GEMINI_API_KEY."
-                        else:
-                            message_placeholder.markdown("Bộ não AI đang phân tích dữ liệu văn bản... 🧠")
-                            response_text = generate_gemini_response(prompt, document_context, selected_client, selected_lang)
+                        # Gọi thẳng vào RAG Generator, tốc độ truy xuất giờ chỉ tính bằng mili-giây
+                        response_text = generate_rag_response(prompt, selected_client, selected_lang)
                         
                         message_placeholder.markdown(response_text)
                         
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
 
 except Exception as e:
-    st.error(f"Xung đột mã nguồn nghiêm trọng: {e}")
+    st.error(f"Sập hệ thống RAG: {e}")
     with st.expander("Gỡ lỗi kỹ thuật (Traceback)"):
         st.code(traceback.format_exc())
