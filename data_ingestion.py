@@ -3,6 +3,7 @@ import io
 import json
 import PyPDF2
 import docx
+import pandas as pd  # <--- THÊM DÒNG NÀY ĐỂ XỬ LÝ EXCEL
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
