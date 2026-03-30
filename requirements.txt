@@ -6,6 +6,7 @@ google-auth
 google-auth-httplib2
 google-auth-oauthlib
 streamlit-authenticator==0.4.1
+extra-streamlit-components
 google-generativeai
 bcrypt
 PyPDF2
