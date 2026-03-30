@@ -13,4 +13,5 @@ python-docx
 langchain
 langchain-community
 langchain-google-genai
+langchain-text-splitters
 chromadb
