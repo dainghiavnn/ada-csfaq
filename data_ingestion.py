@@ -60,12 +60,22 @@ def read_file_content(drive_service, file_id, mime_type):
             elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
                 doc = docx.Document(file_stream)
                 return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+            
+            # ---> BẮT ĐẦU ĐOẠN MÃ MỚI THÊM VÀO ĐỂ ĐỌC EXCEL (.xlsx) <---
+            elif mime_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+                # Dùng Pandas để đọc luồng nhị phân Excel, sau đó chuyển thành dạng bảng text (CSV) cho AI dễ hiểu
+                df = pd.read_excel(file_stream)
+                return df.to_csv(index=False) 
+            # ---> KẾT THÚC ĐOẠN MÃ MỚI <---
                 
             elif mime_type == 'text/plain':
                 return file_stream.read().decode('utf-8')
                 
             else:
                 return ""
+    except Exception as e:
+        print(f"Extraction Error on {file_id}: {e}")
+        return ""
     except Exception as e:
         print(f"Extraction Error on {file_id}: {e}")
         return ""
