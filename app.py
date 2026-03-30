@@ -49,20 +49,27 @@ def load_users():
 def prepare_credentials(_df_users):
     creds = {"usernames": {}}
     
-    # Duyệt file excel, chỉ lấy những người có trạng thái ACTIVE
     if isinstance(_df_users, pd.DataFrame) and not _df_users.empty:
         active_users = _df_users[_df_users['AGENT_STATUS'].astype(str).str.strip().str.upper() == 'ACTIVE']
         for i, (_, row) in enumerate(active_users.iterrows()):
-            email = str(row['MAIL']).strip()
+            
+            # 1. FIX LỖI CHỮ HOA/THƯỜNG: Ép toàn bộ Email thành chữ thường (lowercase)
+            raw_email = str(row['MAIL']).strip()
+            email_key = raw_email.lower() 
+            
             plain_pass = str(row['Password']).strip()
             
+            # 2. FIX LỖI SỐ THẬP PHÂN CỦA EXCEL: Chặt bỏ đuôi ".0" nếu có
+            if plain_pass.endswith(".0"):
+                plain_pass = plain_pass[:-2]
+
             if plain_pass.startswith("$2b$"): 
                 hashed_pass = plain_pass
             else:
                 hashed_pass = bcrypt.hashpw(plain_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-            creds["usernames"][email] = {
-                "email": email,
+            creds["usernames"][email_key] = {
+                "email": raw_email,
                 "name": str(row['NAME']).strip(),
                 "password": hashed_pass, 
                 "logged_in": False,
