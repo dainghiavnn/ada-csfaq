@@ -16,3 +16,5 @@ langchain-community
 langchain-google-genai
 langchain-text-splitters
 chromadb
+langchain-pinecone
+pinecone-client
